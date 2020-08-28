@@ -340,10 +340,13 @@ public class NBMWebRTCPeer{
             this.includeLocalMedia = includeLocalMedia;
         }
 
+        @Override
         public void run() {
-            if (mediaResourceManager.getLocalMediaStream() == null) {
-                mediaResourceManager.createMediaConstraints();
-                startLocalMediaSync();
+            if (includeLocalMedia) {
+                if (mediaResourceManager.getLocalMediaStream() == null) {
+                    mediaResourceManager.createMediaConstraints();
+                    startLocalMediaSync();
+                }
             }
 
             NBMPeerConnection connection = peerConnectionResourceManager.getConnection(connectionId);
