@@ -128,7 +128,12 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
         videoCallEnabled = peerConnectionParameters.videoCallEnabled;
     }
 
-    void createMediaConstraints() {
+    void createPeerConnectionConstraints() {
+        if (pcConstraints != null) {
+            Log.i(TAG, "createPeerConnectionConstraints() - pcConstraints already created - do nothing");
+            return;
+        }
+
         // Create peer connection constraints.
         pcConstraints = new MediaConstraints();
 
@@ -140,6 +145,28 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
         }
 
         pcConstraints.optional.add(new MediaConstraints.KeyValuePair("internalSctpDataChannels", "true"));
+    }
+
+    void createSDPMediaConstraints() {
+        if (sdpMediaConstraints != null) {
+            Log.i(TAG, "createSDPMediaConstraints() - sdpMediaConstraints already created - do nothing");
+        }
+
+        // Create SDP constraints.
+        sdpMediaConstraints = new MediaConstraints();
+        sdpMediaConstraints.mandatory.add(new MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"));
+        if (videoCallEnabled || peerConnectionParameters.loopback) {
+            sdpMediaConstraints.mandatory.add(new MediaConstraints.KeyValuePair("OfferToReceiveVideo", "true"));
+        } else {
+            sdpMediaConstraints.mandatory.add(new MediaConstraints.KeyValuePair("OfferToReceiveVideo", "false"));
+        }
+
+        sdpMediaConstraints.optional.add(new MediaConstraints.KeyValuePair(DTLS_SRTP_KEY_AGREEMENT_CONSTRAINT, "true"));
+        sdpMediaConstraints.optional.add(new MediaConstraints.KeyValuePair("internalSctpDataChannels", "true"));
+    }
+
+    void createMediaConstraints() {
+        createPeerConnectionConstraints();
 
         // Check if there is a camera on device and disable video call if not.
         if (numberOfCameras == 0) {
@@ -184,17 +211,8 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
             audioConstraints.mandatory.add(new MediaConstraints.KeyValuePair(AUDIO_HIGH_PASS_FILTER_CONSTRAINT, "false"));
             audioConstraints.mandatory.add(new MediaConstraints.KeyValuePair(AUDIO_NOISE_SUPPRESSION_CONSTRAINT, "false"));
         }
-        // Create SDP constraints.
-        sdpMediaConstraints = new MediaConstraints();
-        sdpMediaConstraints.mandatory.add(new MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"));
-        if (videoCallEnabled || peerConnectionParameters.loopback) {
-            sdpMediaConstraints.mandatory.add(new MediaConstraints.KeyValuePair("OfferToReceiveVideo", "true"));
-        } else {
-            sdpMediaConstraints.mandatory.add(new MediaConstraints.KeyValuePair("OfferToReceiveVideo", "false"));
-        }
 
-        sdpMediaConstraints.optional.add(new MediaConstraints.KeyValuePair(DTLS_SRTP_KEY_AGREEMENT_CONSTRAINT, "true"));
-        sdpMediaConstraints.optional.add(new MediaConstraints.KeyValuePair("internalSctpDataChannels", "true"));
+        createSDPMediaConstraints();
     }
 
     MediaConstraints getPcConstraints(){

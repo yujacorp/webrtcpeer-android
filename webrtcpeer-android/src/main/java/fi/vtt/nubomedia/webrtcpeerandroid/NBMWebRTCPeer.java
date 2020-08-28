@@ -354,6 +354,10 @@ public class NBMWebRTCPeer{
             if (connection == null) {
                 if (signalingParameters != null) {
 
+                    if (mediaResourceManager.getPcConstraints() == null) {
+                        mediaResourceManager.createPeerConnectionConstraints();
+                    }
+
                     connection = peerConnectionResourceManager.createPeerConnection(
                                                                 signalingParameters,
                                                                 mediaResourceManager.getPcConstraints(),
@@ -366,6 +370,10 @@ public class NBMWebRTCPeer{
 
                     DataChannel.Init init =  new DataChannel.Init();
                     createDataChannel(this.connectionId, "default", init);
+
+                    if (mediaResourceManager.getSdpMediaConstraints() == null) {
+                        mediaResourceManager.createSDPMediaConstraints();
+                    }
 
                     // Create offer. Offer SDP will be sent to answering client in
                     // PeerConnectionEvents.onLocalDescription event.
