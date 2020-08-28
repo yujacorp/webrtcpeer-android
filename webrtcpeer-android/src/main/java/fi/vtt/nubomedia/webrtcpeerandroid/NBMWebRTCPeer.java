@@ -521,13 +521,18 @@ public class NBMWebRTCPeer{
      * Closes all connections
      */
     @SuppressWarnings("unused")
-    public void close(){
+    public void close() {
         executor.execute(new Runnable() {
             @Override
             public void run() {
-                for(NBMPeerConnection c : peerConnectionResourceManager.getConnections()){
-                    c.getPc().removeStream(mediaResourceManager.getLocalMediaStream());
+                if (mediaResourceManager.getLocalMediaStream() != null) {
+                    for (NBMPeerConnection c: peerConnectionResourceManager.getConnections()) {
+                        c.getPc().removeStream(mediaResourceManager.getLocalMediaStream());
+                    }
+                } else {
+                    Log.i(TAG, "close() - MRM - LocalMediaStream() NULL - skipping PeerConnection.removeStream()");
                 }
+
                 peerConnectionResourceManager.closeAllConnections();
                 mediaResourceManager.close();
                 peerConnectionFactory.dispose();
