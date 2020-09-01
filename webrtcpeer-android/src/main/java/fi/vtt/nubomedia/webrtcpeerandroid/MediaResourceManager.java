@@ -165,25 +165,30 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
         sdpMediaConstraints.optional.add(new MediaConstraints.KeyValuePair("internalSctpDataChannels", "true"));
     }
 
-    void createMediaConstraints() {
-        createPeerConnectionConstraints();
+    void createVideoConstraints(boolean selfVideoEnabled) {
 
         // Check if there is a camera on device and disable video call if not.
         if (numberOfCameras == 0) {
             Log.w(TAG, "No camera on device. Switch to audio only call.");
             videoCallEnabled = false;
+        } else {
+            videoCallEnabled = selfVideoEnabled;
         }
+
         // Create video constraints if video call is enabled.
         if (videoCallEnabled) {
+
             videoConstraints = new MediaConstraints();
             int videoWidth = peerConnectionParameters.videoWidth;
             int videoHeight = peerConnectionParameters.videoHeight;
+
             // If VP8 HW video encoder is supported and video resolution is not
             // specified force it to HD.
             if ((videoWidth == 0 || videoHeight == 0) && peerConnectionParameters.videoCodecHwAcceleration && MediaCodecVideoEncoder.isVp8HwSupported()) {
                 videoWidth = HD_VIDEO_WIDTH;
                 videoHeight = HD_VIDEO_HEIGHT;
             }
+
             // Add video resolution constraints.
             if (videoWidth > 0 && videoHeight > 0) {
                 videoWidth = Math.min(videoWidth, MAX_VIDEO_WIDTH);
@@ -193,6 +198,7 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
                 videoConstraints.mandatory.add(new MediaConstraints.KeyValuePair(MIN_VIDEO_HEIGHT_CONSTRAINT, Integer.toString(videoHeight)));
                 videoConstraints.mandatory.add(new MediaConstraints.KeyValuePair(MAX_VIDEO_HEIGHT_CONSTRAINT, Integer.toString(videoHeight)));
             }
+
             // Add fps constraints.
             int videoFps = peerConnectionParameters.videoFps;
             if (videoFps > 0) {
@@ -200,9 +206,14 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
                 videoConstraints.mandatory.add(new MediaConstraints.KeyValuePair(MIN_VIDEO_FPS_CONSTRAINT, Integer.toString(videoFps)));
                 videoConstraints.mandatory.add(new MediaConstraints.KeyValuePair(MAX_VIDEO_FPS_CONSTRAINT, Integer.toString(videoFps)));
             }
+        } else {
+            videoConstraints = null;
         }
-        // Create audio constraints.
+    }
+
+    void createAudioConstraints() {
         audioConstraints = new MediaConstraints();
+
         // added for audio performance measurements
         if (peerConnectionParameters.noAudioProcessing) {
             Log.d(TAG, "Disabling audio processing");
@@ -211,7 +222,12 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
             audioConstraints.mandatory.add(new MediaConstraints.KeyValuePair(AUDIO_HIGH_PASS_FILTER_CONSTRAINT, "false"));
             audioConstraints.mandatory.add(new MediaConstraints.KeyValuePair(AUDIO_NOISE_SUPPRESSION_CONSTRAINT, "false"));
         }
+    }
 
+    void createMediaConstraints(boolean selfAudioEnabled, boolean selfVideoEnabled) {
+        createPeerConnectionConstraints();
+        createVideoConstraints(selfVideoEnabled);
+        createAudioConstraints();
         createSDPMediaConstraints();
     }
 
@@ -305,7 +321,7 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
         executor.execute(new AttachRendererTask(remoteRender, remoteStream));
     }
 
-    void createLocalMediaStream(Object renderEGLContext,final VideoRenderer.Callbacks localRender) {
+    void createLocalMediaStream(Object renderEGLContext, final VideoRenderer.Callbacks localRender) {
         if (factory == null) {
             Log.e(TAG, "Peerconnection factory is not created");
             return;

@@ -276,10 +276,19 @@ public class NBMWebRTCPeer{
         // created on the same thread as previously destroyed peerConnectionFactory.
         executor.requestStart();
 
-        peerConnectionParameters = new NBMWebRTCPeer.NBMPeerConnectionParameters(true, false,
-                         config.getReceiverVideoFormat().width, config.getReceiverVideoFormat().heigth,
-                        (int)config.getReceiverVideoFormat().frameRate, config.getVideoBandwidth(), config.getVideoCodec().toString(), true,
-                        config.getAudioBandwidth(), config.getAudioCodec().toString(),false, true);
+        peerConnectionParameters = new NBMWebRTCPeer.NBMPeerConnectionParameters(
+                true,
+                false,
+                config.getReceiverVideoFormat().width,
+                config.getReceiverVideoFormat().heigth,
+                (int)config.getReceiverVideoFormat().frameRate,
+                config.getVideoBandwidth(),
+                config.getVideoCodec().toString(),
+                true,
+                config.getAudioBandwidth(),
+                config.getAudioCodec().toString(),
+                false,
+                true);
 
         iceServers = new LinkedList<>();
         // Add Google's stun as a default ICE server
@@ -335,17 +344,30 @@ public class NBMWebRTCPeer{
         String connectionId;
         boolean includeLocalMedia;
 
-        private GenerateOfferTask(String connectionId, boolean includeLocalMedia){
+        // these variables don't do anything if `includeLocalMedia == false`
+        boolean selfAudioEnabled;
+        boolean selfVideoEnabled;
+
+        private GenerateOfferTask(String connectionId, boolean includeLocalMedia) {
+            this(connectionId, includeLocalMedia, includeLocalMedia, includeLocalMedia);
+        }
+
+        private GenerateOfferTask(String connectionId, boolean includeLocalMedia, boolean selfAudioEnabled, boolean selfVideoEnabled) {
             this.connectionId = connectionId;
             this.includeLocalMedia = includeLocalMedia;
+
+            this.selfAudioEnabled = selfAudioEnabled;
+            this.selfVideoEnabled = selfVideoEnabled;
         }
 
         @Override
         public void run() {
             if (includeLocalMedia) {
                 if (mediaResourceManager.getLocalMediaStream() == null) {
-                    mediaResourceManager.createMediaConstraints();
+                    mediaResourceManager.createMediaConstraints(selfAudioEnabled, selfVideoEnabled);
                     startLocalMediaSync();
+                } else {
+                    Log.i(TAG, "GenerateOfferTask - localMediaStream NOT NULL, media constraints not recreated");
                 }
             }
 
@@ -390,7 +412,11 @@ public class NBMWebRTCPeer{
 	*/
     @SuppressWarnings("unused")
     public void generateOffer(String connectionId, boolean includeLocalMedia){
-        executor.execute(new GenerateOfferTask(connectionId, includeLocalMedia));
+        generateOffer(connectionId, includeLocalMedia, includeLocalMedia, includeLocalMedia);
+    }
+
+    public void generateOffer(String connectionId, boolean includeLocalMedia, boolean selfAudioEnabled, boolean selfVideoEnabled) {
+        executor.execute(new GenerateOfferTask(connectionId, includeLocalMedia, selfAudioEnabled, selfVideoEnabled));
     }
 
     @SuppressWarnings("unused")
@@ -494,11 +520,26 @@ public class NBMWebRTCPeer{
      */
     @SuppressWarnings("unused")
     public void closeConnection(String connectionId){
-        if (peerConnectionResourceManager.getConnection(connectionId)==null) {
-            return;
+        closeConnection(connectionId, false);
+    }
+
+    public void closeConnection(String connectionId, boolean isSelfConnection) {
+        NBMPeerConnection connection = peerConnectionResourceManager.getConnection(connectionId);
+        if (connection == null) return;
+
+        MediaStream localMediaStream = mediaResourceManager.getLocalMediaStream();
+        if (localMediaStream != null) {
+            // null check here
+            // self join w/o video or audio > remote user leaves > removeStream propagates NPE
+            connection.getPc().removeStream(localMediaStream);
         }
-        peerConnectionResourceManager.getConnection(connectionId).getPc().removeStream(mediaResourceManager.getLocalMediaStream());
+
         peerConnectionResourceManager.closeConnection(connectionId);
+
+        if (isSelfConnection && localMediaStream != null) {
+            mediaResourceManager.close(); // destroy localMediaStream
+            localMediaStream = null;
+        }
     }
 
     @SuppressWarnings("unused")
