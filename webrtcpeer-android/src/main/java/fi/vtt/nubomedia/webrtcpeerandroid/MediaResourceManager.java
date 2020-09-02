@@ -456,6 +456,11 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
         }
 
         if (videoCapturer != null) {
+            try {
+                videoCapturer.stopCapture();
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
             videoCapturer.dispose();
             videoCapturer = null;
         }
