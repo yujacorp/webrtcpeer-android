@@ -256,6 +256,19 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
         });
     }
 
+    void disposeVideoSource() {
+        executor.execute(new Runnable() {
+            @Override
+            public void run() {
+                if (videoSource != null) {
+                    Log.d(TAG, "Dispose video source.");
+                    videoSource.dispose();
+                    videoSource = null;
+                }
+            }
+        });
+    }
+
     void startVideoSource() {
         executor.execute(new Runnable() {
             @Override
@@ -449,14 +462,16 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
         return retMe;
     }
 
-    void close(){
-        // Uncomment only if you know what you are doing
+    void close() {
         if (localMediaStream != null) {
             localMediaStream.dispose();
             localMediaStream = null;
         }
-        //videoCapturer.dispose();
-        //videoCapturer = null;
+
+        if (videoCapturer != null) {
+            videoCapturer.dispose();
+            videoCapturer = null;
+        }
     }
 
     @Override

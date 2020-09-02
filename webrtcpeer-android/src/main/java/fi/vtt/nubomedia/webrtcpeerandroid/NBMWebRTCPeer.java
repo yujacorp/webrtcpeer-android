@@ -576,6 +576,7 @@ public class NBMWebRTCPeer{
 
                 peerConnectionResourceManager.closeAllConnections();
                 mediaResourceManager.close();
+                mediaResourceManager.disposeVideoSource();
                 peerConnectionFactory.dispose();
                 peerConnectionResourceManager = null;
                 mediaResourceManager = null;
@@ -620,6 +621,10 @@ public class NBMWebRTCPeer{
     @SuppressWarnings("unused")
     public void stopLocalMedia() {
         mediaResourceManager.stopVideoSource();
+    }
+
+    public void disposeLocalMedia() {
+        mediaResourceManager.disposeVideoSource();
     }
 
     /**
