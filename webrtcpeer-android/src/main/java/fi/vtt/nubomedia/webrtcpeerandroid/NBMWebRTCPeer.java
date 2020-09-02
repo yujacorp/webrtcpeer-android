@@ -622,6 +622,10 @@ public class NBMWebRTCPeer{
         mediaResourceManager.stopVideoSource();
     }
 
+    public void disposeLocalMedia() {
+        mediaResourceManager.disposeVideoSource();
+    }
+
     /**
      * Attaches remote stream to renderer
      * @param remoteRender A render callback for rendering the remote media
