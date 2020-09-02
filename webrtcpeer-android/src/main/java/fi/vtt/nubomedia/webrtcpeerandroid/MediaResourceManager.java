@@ -263,6 +263,7 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
                 if (videoSource != null) {
                     Log.d(TAG, "Dispose video source.");
                     videoSource.dispose();
+                    videoSource = null;
                 }
             }
         });
