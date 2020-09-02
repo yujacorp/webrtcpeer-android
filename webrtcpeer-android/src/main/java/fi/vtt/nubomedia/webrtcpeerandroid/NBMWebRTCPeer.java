@@ -576,6 +576,7 @@ public class NBMWebRTCPeer{
 
                 peerConnectionResourceManager.closeAllConnections();
                 mediaResourceManager.close();
+                mediaResourceManager.disposeVideoSource();
                 peerConnectionFactory.dispose();
                 peerConnectionResourceManager = null;
                 mediaResourceManager = null;
