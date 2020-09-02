@@ -449,14 +449,16 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
         return retMe;
     }
 
-    void close(){
-        // Uncomment only if you know what you are doing
+    void close() {
         if (localMediaStream != null) {
             localMediaStream.dispose();
             localMediaStream = null;
         }
-        //videoCapturer.dispose();
-        //videoCapturer = null;
+
+        if (videoCapturer != null) {
+            videoCapturer.dispose();
+            videoCapturer = null;
+        }
     }
 
     @Override
