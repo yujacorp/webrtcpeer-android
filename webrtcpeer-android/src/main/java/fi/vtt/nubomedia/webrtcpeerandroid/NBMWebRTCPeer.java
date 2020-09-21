@@ -441,6 +441,14 @@ public class NBMWebRTCPeer{
         }
     }
 
+    public void addIceServer(String serverURI, String username, String credential) {
+        if (!initialized) {
+            iceServers.add(new PeerConnection.IceServer(serverURI, username, credential));
+        } else {
+            throw new RuntimeException("Cannot set ICE servers after NBMWebRTCPeer has been initialized");
+        }
+    }
+
     private class ProcessOfferTask implements Runnable {
 
         SessionDescription remoteOffer;
