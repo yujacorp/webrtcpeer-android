@@ -115,6 +115,10 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
     private VideoCapturerAndroid videoCapturer;
     private NBMCameraPosition currentCameraPosition;
 
+    // factor out self stream properties from videoCallEnabled
+    // we dont want to send our video just because remote users are
+    private boolean generateSelfStream;
+
     MediaResourceManager(NBMWebRTCPeer.NBMPeerConnectionParameters peerConnectionParameters,
                                 LooperExecutor executor, PeerConnectionFactory factory){
         this.peerConnectionParameters = peerConnectionParameters;
@@ -126,6 +130,8 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
         remoteVideoRenderers = new HashMap<>();
         remoteVideoMediaStreams = new HashMap<>();
         videoCallEnabled = peerConnectionParameters.videoCallEnabled;
+
+        generateSelfStream = false;
     }
 
     void createPeerConnectionConstraints() {
@@ -167,16 +173,16 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
 
     void createVideoConstraints(boolean selfVideoEnabled) {
 
-        // Check if there is a camera on device and disable video call if not.
+        // check if there is a camera on device and disable self stream if not
         if (numberOfCameras == 0) {
             Log.w(TAG, "No camera on device. Switch to audio only call.");
-            videoCallEnabled = false;
+            generateSelfStream = false;
         } else {
-            videoCallEnabled = selfVideoEnabled;
+            generateSelfStream = selfVideoEnabled;
         }
 
-        // Create video constraints if video call is enabled.
-        if (videoCallEnabled) {
+        // create video constraints if self stream is enabled
+        if (generateSelfStream) {
 
             videoConstraints = new MediaConstraints();
             int videoWidth = peerConnectionParameters.videoWidth;
@@ -340,7 +346,7 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
             return;
         }
         this.localRender = localRender;
-        if (videoCallEnabled) {
+        if (generateSelfStream) {
             factory.setVideoHwAccelerationOptions(renderEGLContext, renderEGLContext);
         }
 
@@ -351,7 +357,7 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
         localMediaStream = factory.createLocalMediaStream("ARDAMS");
 
         // If video call is enabled and the device has camera(s)
-        if (videoCallEnabled && numberOfCameras > 0) {
+        if (generateSelfStream) {
             String cameraDeviceName; // = CameraEnumerationAndroid.getDeviceName(0);
             String frontCameraDeviceName = CameraEnumerationAndroid.getNameOfFrontFacingDevice();
             String backCameraDeviceName = CameraEnumerationAndroid.getNameOfBackFacingDevice();
@@ -387,8 +393,8 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
     }
 
     void selectCameraPosition(final NBMCameraPosition position){
-        if (!videoCallEnabled || videoCapturer == null || !hasCameraPosition(position)) {
-            Log.e(TAG, "Failed to switch camera. Video: " + videoCallEnabled + ". . Number of cameras: " + numberOfCameras);
+        if (!generateSelfStream || videoCapturer == null || !hasCameraPosition(position)) {
+            Log.e(TAG, "Failed to switch camera. Video: " + generateSelfStream + ". . Number of cameras: " + numberOfCameras);
             return;
         }
         if (position != currentCameraPosition) {
@@ -404,8 +410,8 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
     }
 
     void switchCamera(){
-        if (!videoCallEnabled || videoCapturer == null) {
-            Log.e(TAG, "Failed to switch camera. Video: " + videoCallEnabled + ". . Number of cameras: " + numberOfCameras);
+        if (!generateSelfStream || videoCapturer == null) {
+            Log.e(TAG, "Failed to switch camera. Video: " + generateSelfStream + ". . Number of cameras: " + numberOfCameras);
             return;
         }
         executor.execute(new Runnable() {
