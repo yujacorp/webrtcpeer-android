@@ -209,7 +209,7 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
             int videoFps = peerConnectionParameters.videoFps;
             if (videoFps > 0) {
                 videoFps = Math.min(videoFps, MAX_VIDEO_FPS);
-                videoConstraints.mandatory.add(new MediaConstraints.KeyValuePair(MIN_VIDEO_FPS_CONSTRAINT, Integer.toString(videoFps)));
+                videoConstraints.mandatory.add(new MediaConstraints.KeyValuePair(MIN_VIDEO_FPS_CONSTRAINT, "0"));
                 videoConstraints.mandatory.add(new MediaConstraints.KeyValuePair(MAX_VIDEO_FPS_CONSTRAINT, Integer.toString(videoFps)));
             }
         } else {
