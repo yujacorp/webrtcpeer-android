@@ -19,6 +19,7 @@ package fi.vtt.nubomedia.webrtcpeerandroid;
 
 import java.util.LinkedList;
 import java.util.List;
+
 import android.content.Context;
 import android.util.Log;
 import org.webrtc.DataChannel;
@@ -70,23 +71,32 @@ import fi.vtt.nubomedia.utilitiesandroid.LooperExecutor;
 /**
  * Main API class for implementing WebRTC peer on Android
  */
-public class NBMWebRTCPeer{
-    private static final String TAG = "NBMWebRTCPeer";
+public class NBMWebRTCPeer {
+
+    private static final String TAG = "[VC][KURENTO][PEER]";
+
     private static final String FIELD_TRIAL_VP9 = "WebRTC-SupportVP9/Enabled/";
     private static final String FIELD_TRIAL_AUTOMATIC_RESIZE = "WebRTC-MediaCodecVideoEncoder-AutomaticResize/Enabled/";
+
     private final LooperExecutor executor;
     private Context context;
     private NBMMediaConfiguration config;
     private NBMPeerConnectionParameters peerConnectionParameters;
     private SignalingParameters signalingParameters = null;
+
     private VideoRenderer.Callbacks localRender;
     private VideoRenderer.Callbacks masterRenderer;
     private MediaStream activeMasterStream;
+
     private Observer observer;
+
     private PeerConnectionFactory peerConnectionFactory;
     private PeerConnectionResourceManager peerConnectionResourceManager;
+
     private MediaResourceManager mediaResourceManager;
+
     private LinkedList<PeerConnection.IceServer> iceServers;
+
     private boolean initialized = false;
 
     /**
@@ -250,16 +260,16 @@ public class NBMWebRTCPeer{
         }
     }
 
-	/**
-	* NBMWebRTCPeer constructor
+    /**
+     * NBMWebRTCPeer constructor
      * <p>
      *     This constructor should always be used in order to properly create a NBMWebRTCPeer instance
      * </p>
-	* @param  config			Media configuration instance
-	* @param  context			Android context instance
-	* @param  localRenderer	    Callback for rendering the locally produced media stream
-	* @param  observer			An observer instance which implements WebRTC callback functions
-	*/
+     * @param  config			Media configuration instance
+     * @param  context			Android context instance
+     * @param  localRenderer	    Callback for rendering the locally produced media stream
+     * @param  observer			An observer instance which implements WebRTC callback functions
+     */
     public NBMWebRTCPeer(NBMMediaConfiguration config, Context context,
                          VideoRenderer.Callbacks localRenderer, Observer observer) {
 
@@ -313,12 +323,12 @@ public class NBMWebRTCPeer{
         updateMasterRenderer();
     }
 
-	/**
-	 * Initializes NBMWebRTCPeer
-	 * <p>
-	 * NBMWebRTCPeer must be initialized before use. This function can be called immediately after constructor
-	 * <p>
-	 */
+    /**
+     * Initializes NBMWebRTCPeer
+     * <p>
+     * NBMWebRTCPeer must be initialized before use. This function can be called immediately after constructor
+     * <p>
+     */
     @SuppressWarnings("unused")
     public void initialize() {
         executor.execute(new Runnable() {
@@ -381,9 +391,9 @@ public class NBMWebRTCPeer{
                     }
 
                     connection = peerConnectionResourceManager.createPeerConnection(
-                                                                signalingParameters,
-                                                                mediaResourceManager.getPcConstraints(),
-                                                                connectionId);
+                            signalingParameters,
+                            mediaResourceManager.getPcConstraints(),
+                            connectionId);
                     connection.addObserver(observer);
                     connection.addObserver(mediaResourceManager);
                     if (includeLocalMedia) {
@@ -405,11 +415,11 @@ public class NBMWebRTCPeer{
         }
     }
 
-	/**
-	* Generate SDP offer
-	*
-	* @param  connectionId		A unique identifier for the connection
-	*/
+    /**
+     * Generate SDP offer
+     *
+     * @param  connectionId		A unique identifier for the connection
+     */
     @SuppressWarnings("unused")
     public void generateOffer(String connectionId, boolean includeLocalMedia){
         generateOffer(connectionId, includeLocalMedia, includeLocalMedia, includeLocalMedia);
@@ -527,13 +537,16 @@ public class NBMWebRTCPeer{
      * @param connectionId A unique identifier for the connection
      */
     @SuppressWarnings("unused")
-    public void closeConnection(String connectionId){
+    public void closeConnection(String connectionId) {
         closeConnection(connectionId, false);
     }
 
     public void closeConnection(String connectionId, boolean isSelfConnection) {
         NBMPeerConnection connection = peerConnectionResourceManager.getConnection(connectionId);
-        if (connection == null) return;
+        if (connection == null) {
+            Log.i(TAG, "closeConnection() - connection does not exist, do nothing");
+            return;
+        }
 
         MediaStream localMediaStream = mediaResourceManager.getLocalMediaStream();
         if (localMediaStream != null) {
@@ -641,8 +654,45 @@ public class NBMWebRTCPeer{
      * @param remoteStream The remote media stream
      */
     @SuppressWarnings("unused")
-    public void attachRendererToRemoteStream(VideoRenderer.Callbacks remoteRender, MediaStream remoteStream){
+    public void attachRendererToRemoteStream(VideoRenderer.Callbacks remoteRender, MediaStream remoteStream) {
         mediaResourceManager.attachRendererToRemoteStream(remoteRender, remoteStream);
+    }
+
+    public void attachRendererToRemoteStream(VideoRenderer.Callbacks remoteRender, MediaStream remoteStream, boolean isScreenshare) {
+        mediaResourceManager.attachRendererToRemoteStream(remoteRender, remoteStream, isScreenshare);
+    }
+
+    public void removeAllVideoRenderers() {
+        mediaResourceManager.removeAllVideoRenderers();
+    }
+
+    public void removeScreenshareVideoRenderer() {
+        mediaResourceManager.removeScreenshareVideoRenderer();
+    }
+
+    public static class RendererAndStream {
+        private VideoRenderer.Callbacks renderer;
+        private MediaStream stream;
+
+        public RendererAndStream(VideoRenderer.Callbacks renderer, MediaStream stream) {
+            this.renderer = renderer;
+            this.stream = stream;
+        }
+
+        VideoRenderer.Callbacks getRenderer() { return renderer; }
+        MediaStream getStream() { return stream; }
+    }
+
+    public void reattachSelfVideoRenderer(VideoRenderer.Callbacks renderer) {
+        mediaResourceManager.reattachSelfVideoRenderer(renderer);
+    }
+
+    public void reattachAllRemoteVideoRenderers(List<RendererAndStream> renderersAndStreams) {
+        mediaResourceManager.reattachAllRemoteVideoRenderers(renderersAndStreams);
+    }
+
+    public void reattachScreenshareVideoRenderer(VideoRenderer.Callbacks renderer) {
+        mediaResourceManager.reattachScreenshareVideoRenderer(renderer);
     }
 
     /**
@@ -650,7 +700,7 @@ public class NBMWebRTCPeer{
      * @param position The camera identifier (usually either back or front camera e.g. in camera)
      */
     @SuppressWarnings("unused")
-    public void selectCameraPosition(NBMMediaConfiguration.NBMCameraPosition position){
+    public void selectCameraPosition(NBMMediaConfiguration.NBMCameraPosition position) {
         mediaResourceManager.selectCameraPosition(position);
     }
 
@@ -658,7 +708,7 @@ public class NBMWebRTCPeer{
      * Switches camera between front and back
      */
     @SuppressWarnings("unused")
-    public void switchCameraPosition(){
+    public void switchCameraPosition() {
         mediaResourceManager.switchCamera();
     }
 
@@ -668,7 +718,7 @@ public class NBMWebRTCPeer{
      * @return true if position is available on the device, otherwise false
      */
     @SuppressWarnings("unused")
-    public boolean hasCameraPosition(NBMMediaConfiguration.NBMCameraPosition position){
+    public boolean hasCameraPosition(NBMMediaConfiguration.NBMCameraPosition position) {
         return mediaResourceManager.hasCameraPosition(position);
     }
 
@@ -677,7 +727,7 @@ public class NBMWebRTCPeer{
      * @return true if video is enabled, otherwise false
      */
     @SuppressWarnings("unused")
-    public boolean videoEnabled(){
+    public boolean videoEnabled() {
         return mediaResourceManager.getVideoEnabled();
     }
 
@@ -686,7 +736,7 @@ public class NBMWebRTCPeer{
      * @param enable If true then video will be enabled, if false then video will be disabled
      */
     @SuppressWarnings("unused")
-    public void enableVideo(boolean enable){
+    public void enableVideo(boolean enable) {
         mediaResourceManager.setVideoEnabled(enable);
     }
 
@@ -695,7 +745,7 @@ public class NBMWebRTCPeer{
      * @return true if audio is enabled, otherwise false
      */
     @SuppressWarnings("unused")
-    public boolean audioEnabled(){
+    public boolean audioEnabled() {
         return false;
     }
 
@@ -704,16 +754,14 @@ public class NBMWebRTCPeer{
      * @param enable If true then audio will be enabled, if false then audio will be disabled
      */
     @SuppressWarnings("unused")
-    public void enableAudio(boolean enable){
-
-    }
+    public void enableAudio(boolean enable) {}
 
     /**
      * Check if video is authorized
      * @return true if video is authorized, otherwise false
      */
     @SuppressWarnings("unused")
-    public boolean videoAuthorized(){
+    public boolean videoAuthorized() {
         return false;
     }
 
@@ -722,32 +770,29 @@ public class NBMWebRTCPeer{
      * @return true if audio is authorized, otherwise false
      */
     @SuppressWarnings("unused")
-    public boolean audioAuthorized(){
+    public boolean audioAuthorized() {
         return false;
     }
 
     private void createPeerConnectionFactoryInternal(Context context) {
+
         Log.d(TAG, "Create peer connection peerConnectionFactory. Use video: " + peerConnectionParameters.videoCallEnabled);
-//        isError = false;
+
         // Initialize field trials.
         String field_trials = FIELD_TRIAL_AUTOMATIC_RESIZE;
+
         // Check if VP9 is used by default.
         if (peerConnectionParameters.videoCallEnabled && peerConnectionParameters.videoCodec != null &&
                 peerConnectionParameters.videoCodec.equals(NBMMediaConfiguration.NBMVideoCodec.VP9.toString())) {
             field_trials += FIELD_TRIAL_VP9;
         }
-        PeerConnectionFactory.initializeFieldTrials(field_trials);
 
+        PeerConnectionFactory.initializeFieldTrials(field_trials);
         if (!PeerConnectionFactory.initializeAndroidGlobals(context, true, true, peerConnectionParameters.videoCodecHwAcceleration)) {
             observer.onPeerConnectionError("Failed to initializeAndroidGlobals");
         }
         peerConnectionFactory = new PeerConnectionFactory();
-        // ToDo: What about these options?
-//        if (options != null) {
-//            Log.d(TAG, "Factory networkIgnoreMask option: " + options.networkIgnoreMask);
-//            peerConnectionFactory.setOptions(options);
-//        }
+
         Log.d(TAG, "Peer connection peerConnectionFactory created.");
     }
-
 }

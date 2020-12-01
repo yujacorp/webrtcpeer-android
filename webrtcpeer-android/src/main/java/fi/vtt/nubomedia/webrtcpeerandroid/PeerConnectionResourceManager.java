@@ -47,7 +47,7 @@ final class PeerConnectionResourceManager {
     private NBMPeerConnectionParameters peerConnectionParameters;
 
     PeerConnectionResourceManager(NBMPeerConnectionParameters peerConnectionParameters,
-                                         LooperExecutor executor, PeerConnectionFactory factory) {
+                                  LooperExecutor executor, PeerConnectionFactory factory) {
 
         this.peerConnectionParameters = peerConnectionParameters;
         this.executor = executor;
