@@ -134,9 +134,11 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
     private VideoCapturerAndroid videoCapturer;
     private NBMCameraPosition currentCameraPosition;
 
-    private HashMap<MediaStream,VideoTrack> remoteVideoTracks;
-    private HashMap<VideoRenderer.Callbacks,VideoRenderer> remoteVideoRenderers;
-    private HashMap<VideoRenderer,MediaStream> remoteVideoMediaStreams;
+    // Callbacks -> VideoRenderer -> MediaStream -> VideoTrack
+    private HashMap<String, VideoRenderer.Callbacks> remoteVideoCallbacks;
+    private HashMap<VideoRenderer.Callbacks, VideoRenderer> remoteVideoRenderers;
+    private HashMap<VideoRenderer, MediaStream> remoteVideoMediaStreams;
+    private HashMap<MediaStream, VideoTrack> remoteVideoTracks;
 
     // factor out self stream properties from videoCallEnabled
     // we dont want to send our video just because remote users are
@@ -148,9 +150,12 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
         this.executor = executor;
         this.factory = factory;
         renderVideo = true;
-        remoteVideoTracks = new HashMap<>();
+
+        remoteVideoCallbacks = new HashMap<>();
         remoteVideoRenderers = new HashMap<>();
         remoteVideoMediaStreams = new HashMap<>();
+        remoteVideoTracks = new HashMap<>();
+
         videoCallEnabled = peerConnectionParameters.videoCallEnabled;
 
         generateSelfStream = false;
@@ -311,6 +316,9 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
     }
 
     private VideoTrack createCapturerVideoTrack(VideoCapturerAndroid capturer) {
+
+        Log.i(TAG, "creating local VideoSource & VideoRenderer");
+
         videoSource = factory.createVideoSource(capturer, videoConstraints);
         localVideoTrack = factory.createVideoTrack(VIDEO_TRACK_ID, videoSource);
         localVideoTrack.setEnabled(renderVideo);
@@ -325,17 +333,20 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
         private VideoRenderer.Callbacks remoteRender;
         private MediaStream remoteStream;
         private boolean isSharescreen;
+        private String connectionId;
 
         private AttachRendererTask(VideoRenderer.Callbacks remoteRender, MediaStream remoteStream) {
             this.remoteRender = remoteRender;
             this.remoteStream = remoteStream;
             isSharescreen = false;
+            connectionId = null;
         }
 
-        private AttachRendererTask(VideoRenderer.Callbacks remoteRender, MediaStream remoteStream, boolean isSharescreen) {
+        private AttachRendererTask(VideoRenderer.Callbacks remoteRender, MediaStream remoteStream, boolean isSharescreen, String connectionId) {
             this.remoteRender = remoteRender;
             this.remoteStream = remoteStream;
             this.isSharescreen = isSharescreen;
+            this.connectionId = connectionId;
         }
 
         @Override
@@ -401,6 +412,13 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
 
             VideoRenderer newVideoRenderer = new VideoRenderer(remoteRender);
             remoteVideoTrack.addRenderer(newVideoRenderer);
+
+            if (connectionId != null) {
+                remoteVideoCallbacks.put(connectionId, remoteRender);
+            } else {
+                Log.e(TAG, "connectionId null");
+            }
+
             remoteVideoRenderers.put(remoteRender, newVideoRenderer);
             remoteVideoMediaStreams.put(newVideoRenderer, remoteStream);
             remoteVideoTracks.put(remoteStream, remoteVideoTrack);
@@ -409,14 +427,15 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
         }
     }
 
+    // unused
     void attachRendererToRemoteStream(VideoRenderer.Callbacks remoteRender, MediaStream remoteStream) {
         Log.d(TAG, "Schedule attaching VideoRenderer to remote stream (" + remoteStream + ")");
         executor.execute(new AttachRendererTask(remoteRender, remoteStream));
     }
 
-    void attachRendererToRemoteStream(VideoRenderer.Callbacks remoteRender, MediaStream remoteStream, boolean isScreenshare) {
+    void attachRendererToRemoteStream(VideoRenderer.Callbacks remoteRender, MediaStream remoteStream, boolean isScreenshare, String connectionId) {
         Log.d(TAG, "Schedule attaching VideoRenderer to remote stream (" + remoteStream + ")");
-        executor.execute(new AttachRendererTask(remoteRender, remoteStream, isScreenshare));
+        executor.execute(new AttachRendererTask(remoteRender, remoteStream, isScreenshare, connectionId));
     }
 
     void removeScreenshareVideoRenderer() {
@@ -446,6 +465,64 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
         }
     }
 
+    void removeVideoRenderer(String connectionId) {
+        Log.d(TAG, "Removing video renderer for: " + connectionId);
+        executor.execute(new RemoveVideoRendererTask(connectionId));
+    }
+
+    private class RemoveVideoRendererTask implements Runnable {
+
+        private String connectionId;
+
+        RemoveVideoRendererTask(String connectionId) {
+            this.connectionId = connectionId;
+        }
+
+        @Override
+        public void run() {
+
+            // detach renderer
+            detachRenderer();
+
+            // remove from maps
+            onRemoteVideoConnectionClosed(connectionId);
+        }
+
+        private void detachRenderer() {
+
+            Log.i(TAG, "Detaching renderer");
+
+            VideoRenderer.Callbacks callbacks = remoteVideoCallbacks.get(connectionId);
+            if (callbacks == null) {
+                Log.e(TAG, "cannot find Callbacks for: " + connectionId);
+                return;
+            }
+
+            VideoRenderer videoRenderer = remoteVideoRenderers.get(callbacks);
+            if (videoRenderer == null) {
+                Log.e(TAG, "cannot find VideoRenderer for: " + connectionId);
+                return;
+            }
+
+            MediaStream videoStream = remoteVideoMediaStreams.get(videoRenderer);
+            if (videoStream == null) {
+                Log.e(TAG, "cannot find MediaStream for: " + connectionId);
+                return;
+            }
+
+            VideoTrack videoTrack = remoteVideoTracks.get(videoStream);
+            if (videoTrack == null) {
+                Log.e(TAG, "cannot find VideoTrack for: " + connectionId);
+                return;
+            }
+
+            videoTrack.removeRenderer(videoRenderer);
+            videoRenderer.dispose();
+
+            Log.i(TAG, "Finish detach, renderer disposed");
+        }
+    }
+
     void removeAllVideoRenderers() {
         Log.d(TAG, "Removing all video renderers");
         executor.execute(new RemoveAllVideoRenderersTask());
@@ -453,7 +530,7 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
 
     private class RemoveAllVideoRenderersTask implements Runnable {
 
-        private RemoveAllVideoRenderersTask() {}
+        RemoveAllVideoRenderersTask() {}
 
         @Override
         public void run() {
@@ -504,6 +581,11 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
                 return;
             }
 
+            if (localVideoRenderer == null) {
+                Log.e(TAG, "localVideoRenderer already null - do nothing");
+                return;
+            }
+
             localVideoTrack.removeRenderer(localVideoRenderer);
             localVideoRenderer.dispose();
             localVideoRenderer = null;
@@ -520,7 +602,7 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
 
         private VideoRenderer.Callbacks renderer;
 
-        public ReattachSelfVideoRendererTask(VideoRenderer.Callbacks renderer) {
+        ReattachSelfVideoRendererTask(VideoRenderer.Callbacks renderer) {
             this.renderer = renderer;
         }
 
@@ -539,7 +621,6 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
                 Log.e(TAG, "localVideoRenderer not disposed before reattach");
                 localVideoTrack.removeRenderer(localVideoRenderer);
                 localVideoRenderer.dispose();
-                localVideoTrack = null;
             }
 
             localVideoRenderer = new VideoRenderer(localRender);
@@ -575,10 +656,11 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
             for (NBMWebRTCPeer.RendererAndStream rendererAndStream: renderersAndStreams) {
                 MediaStream stream = rendererAndStream.getStream();
                 VideoRenderer.Callbacks renderer = rendererAndStream.getRenderer();
+                String connectionId = rendererAndStream.getConnectionId();
 
                 // check if the remote stream has a video track
                 if (stream.videoTracks.size() != 1) {
-                    Log.e(TAG, "stream videoTracks size != 1");
+                    Log.e(TAG, "stream videoTracks size != 1, skip");
                     continue;
                 }
 
@@ -588,6 +670,7 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
                 VideoRenderer newVideoRenderer = new VideoRenderer(renderer);
                 remoteVideoTrack.addRenderer(newVideoRenderer);
 
+                remoteVideoCallbacks.put(connectionId, renderer);
                 remoteVideoRenderers.put(renderer, newVideoRenderer);
                 remoteVideoMediaStreams.put(newVideoRenderer, stream);
                 remoteVideoTracks.put(stream, remoteVideoTrack);
@@ -642,6 +725,49 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
 
             Log.d(TAG, "screenshare re-attached");
         }
+    }
+
+    void onRemoteVideoConnectionClosed(String connectionId) {
+
+        Log.i(TAG, "remote video connection closed, remove from maps");
+
+        // remove from callbacks
+        VideoRenderer.Callbacks remoteVideoCallback = remoteVideoCallbacks.get(connectionId);
+        if (remoteVideoCallback == null) {
+            Log.e(TAG, "cannot find remoteVideoCallback for: " + connectionId);
+            return;
+        }
+
+        remoteVideoCallbacks.remove(connectionId);
+
+        // remove from renderers
+        VideoRenderer remoteVideoRenderer = remoteVideoRenderers.get(remoteVideoCallback);
+        if (remoteVideoRenderer == null) {
+            Log.e(TAG, "cannot find remoteVideoRenderer for: " + connectionId);
+            return;
+        }
+
+        remoteVideoRenderers.remove(remoteVideoCallback);
+
+        // remove from mediastreams
+        MediaStream remoteVideoStream = remoteVideoMediaStreams.get(remoteVideoRenderer);
+        if (remoteVideoStream == null) {
+            Log.e(TAG, "cannot find remoteVideoStream for: " + connectionId);
+            return;
+        }
+
+        remoteVideoMediaStreams.remove(remoteVideoRenderer);
+
+        // remove from videotracks
+        VideoTrack remoteVideoTrack = remoteVideoTracks.get(remoteVideoStream);
+        if (remoteVideoTrack == null) {
+            Log.e(TAG, "cannot find remoteVideoTrack for: " + connectionId);
+            return;
+        }
+
+        remoteVideoTracks.remove(remoteVideoStream);
+
+        Log.i(TAG, "removal finished");
     }
 
     void createLocalMediaStream(Object renderEGLContext, final VideoRenderer.Callbacks localRender) {

@@ -36,7 +36,8 @@ import fi.vtt.nubomedia.webrtcpeerandroid.NBMWebRTCPeer.SignalingParameters;
  * (please see the copyright notice below)
  */
 final class PeerConnectionResourceManager {
-    private static final String TAG = "PCResourceManager";
+
+    private static final String TAG = "[VC][KURENTO][PCRM]";
 
     private boolean preferIsac;
     private boolean preferH264;
@@ -56,6 +57,8 @@ final class PeerConnectionResourceManager {
 
         // Check if H.264 is used by default.
         preferH264 = videoCallEnabled && peerConnectionParameters.videoCodec != null && peerConnectionParameters.videoCodec.equals(NBMMediaConfiguration.NBMVideoCodec.H264.toString());
+        Log.i(TAG, "preferH264: " + preferH264);
+
         // Check if ISAC is used by default.
         preferIsac = peerConnectionParameters.audioCodec != null && peerConnectionParameters.audioCodec.equals(NBMMediaConfiguration.NBMAudioCodec.ISAC.toString());
         connections = new HashMap<>();
@@ -64,6 +67,13 @@ final class PeerConnectionResourceManager {
     NBMPeerConnection createPeerConnection( SignalingParameters signalingParameters,
                                             MediaConstraints pcConstraints,
                                             String connectionId) {
+        return createPeerConnection(signalingParameters, pcConstraints, connectionId, false);
+    }
+
+    NBMPeerConnection createPeerConnection( SignalingParameters signalingParameters,
+                                            MediaConstraints pcConstraints,
+                                            String connectionId,
+                                            boolean isScreenshareOffer) {
 
         Log.d(TAG, "Create peer connection.");
         Log.d(TAG, "PCConstraints: " + pcConstraints.toString());
@@ -75,7 +85,7 @@ final class PeerConnectionResourceManager {
         rtcConfig.rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE;
         rtcConfig.keyType = PeerConnection.KeyType.ECDSA;
         //rtcConfig.iceServers IceServer
-        NBMPeerConnection connectionWrapper = new NBMPeerConnection(connectionId, preferIsac, videoCallEnabled, preferH264, executor, peerConnectionParameters);
+        NBMPeerConnection connectionWrapper = new NBMPeerConnection(connectionId, preferIsac, videoCallEnabled, preferH264, executor, peerConnectionParameters, isScreenshareOffer);
         PeerConnection peerConnection = factory.createPeerConnection(rtcConfig, pcConstraints, connectionWrapper);
 
         connectionWrapper.setPc(peerConnection);

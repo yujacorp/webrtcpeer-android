@@ -23,6 +23,7 @@ import java.util.List;
 import android.content.Context;
 import android.util.Log;
 import org.webrtc.DataChannel;
+import org.webrtc.EglBase;
 import org.webrtc.IceCandidate;
 import org.webrtc.MediaStream;
 import org.webrtc.PeerConnection;
@@ -30,7 +31,6 @@ import org.webrtc.PeerConnection.IceConnectionState;
 import org.webrtc.PeerConnectionFactory;
 import org.webrtc.SessionDescription;
 import org.webrtc.VideoRenderer;
-import org.webrtc.VideoRendererGui;
 import fi.vtt.nubomedia.utilitiesandroid.LooperExecutor;
 
 /**
@@ -83,6 +83,8 @@ public class NBMWebRTCPeer {
     private NBMMediaConfiguration config;
     private NBMPeerConnectionParameters peerConnectionParameters;
     private SignalingParameters signalingParameters = null;
+
+    private EglBase eglBase;
 
     private VideoRenderer.Callbacks localRender;
     private VideoRenderer.Callbacks masterRenderer;
@@ -291,7 +293,7 @@ public class NBMWebRTCPeer {
                 false,
                 config.getReceiverVideoFormat().width,
                 config.getReceiverVideoFormat().heigth,
-                (int)config.getReceiverVideoFormat().frameRate,
+                (int) config.getReceiverVideoFormat().frameRate,
                 config.getVideoBandwidth(),
                 config.getVideoCodec().toString(),
                 true,
@@ -303,6 +305,12 @@ public class NBMWebRTCPeer {
         iceServers = new LinkedList<>();
         // Add Google's stun as a default ICE server
         addIceServer("stun:stun.l.google.com:19302");
+    }
+
+    public NBMWebRTCPeer(NBMMediaConfiguration config, Context context,
+                         VideoRenderer.Callbacks localRenderer, Observer observer, EglBase eglBase) {
+        this(config, context, localRenderer, observer);
+        this.eglBase = eglBase;
     }
 
     private void updateMasterRenderer() {
@@ -358,16 +366,20 @@ public class NBMWebRTCPeer {
         boolean selfAudioEnabled;
         boolean selfVideoEnabled;
 
+        boolean isScreenshareOffer;
+
         private GenerateOfferTask(String connectionId, boolean includeLocalMedia) {
-            this(connectionId, includeLocalMedia, includeLocalMedia, includeLocalMedia);
+            this(connectionId, includeLocalMedia, includeLocalMedia, includeLocalMedia, false);
         }
 
-        private GenerateOfferTask(String connectionId, boolean includeLocalMedia, boolean selfAudioEnabled, boolean selfVideoEnabled) {
+        private GenerateOfferTask(String connectionId, boolean includeLocalMedia, boolean selfAudioEnabled, boolean selfVideoEnabled, boolean isScreenshareOffer) {
             this.connectionId = connectionId;
             this.includeLocalMedia = includeLocalMedia;
 
             this.selfAudioEnabled = selfAudioEnabled;
             this.selfVideoEnabled = selfVideoEnabled;
+
+            this.isScreenshareOffer = isScreenshareOffer;
         }
 
         @Override
@@ -393,7 +405,8 @@ public class NBMWebRTCPeer {
                     connection = peerConnectionResourceManager.createPeerConnection(
                             signalingParameters,
                             mediaResourceManager.getPcConstraints(),
-                            connectionId);
+                            connectionId,
+                            isScreenshareOffer);
                     connection.addObserver(observer);
                     connection.addObserver(mediaResourceManager);
                     if (includeLocalMedia) {
@@ -422,11 +435,11 @@ public class NBMWebRTCPeer {
      */
     @SuppressWarnings("unused")
     public void generateOffer(String connectionId, boolean includeLocalMedia){
-        generateOffer(connectionId, includeLocalMedia, includeLocalMedia, includeLocalMedia);
+        generateOffer(connectionId, includeLocalMedia, includeLocalMedia, includeLocalMedia, false);
     }
 
-    public void generateOffer(String connectionId, boolean includeLocalMedia, boolean selfAudioEnabled, boolean selfVideoEnabled) {
-        executor.execute(new GenerateOfferTask(connectionId, includeLocalMedia, selfAudioEnabled, selfVideoEnabled));
+    public void generateOffer(String connectionId, boolean includeLocalMedia, boolean selfAudioEnabled, boolean selfVideoEnabled, boolean isScreenshareOffer) {
+        executor.execute(new GenerateOfferTask(connectionId, includeLocalMedia, selfAudioEnabled, selfVideoEnabled, isScreenshareOffer));
     }
 
     @SuppressWarnings("unused")
@@ -557,6 +570,10 @@ public class NBMWebRTCPeer {
 
         peerConnectionResourceManager.closeConnection(connectionId);
 
+        if (!isSelfConnection) {
+            mediaResourceManager.onRemoteVideoConnectionClosed(connectionId);
+        }
+
         if (isSelfConnection && localMediaStream != null) {
             mediaResourceManager.close(); // destroy localMediaStream
             localMediaStream = null;
@@ -608,7 +625,8 @@ public class NBMWebRTCPeer {
 
     private boolean startLocalMediaSync() {
         if (mediaResourceManager != null && mediaResourceManager.getLocalMediaStream() == null) {
-            mediaResourceManager.createLocalMediaStream(VideoRendererGui.getEglBaseContext(), localRender);
+            EglBase.Context eglBaseContext = eglBase != null ? eglBase.getEglBaseContext() : EglBase.create().getEglBaseContext();
+            mediaResourceManager.createLocalMediaStream(eglBaseContext, localRender);
             mediaResourceManager.startVideoSource();
             mediaResourceManager.selectCameraPosition(config.getCameraPosition());
             return true;
@@ -655,11 +673,19 @@ public class NBMWebRTCPeer {
      */
     @SuppressWarnings("unused")
     public void attachRendererToRemoteStream(VideoRenderer.Callbacks remoteRender, MediaStream remoteStream) {
-        mediaResourceManager.attachRendererToRemoteStream(remoteRender, remoteStream);
+        attachRendererToRemoteStream(remoteRender, remoteStream, false);
     }
 
     public void attachRendererToRemoteStream(VideoRenderer.Callbacks remoteRender, MediaStream remoteStream, boolean isScreenshare) {
-        mediaResourceManager.attachRendererToRemoteStream(remoteRender, remoteStream, isScreenshare);
+        mediaResourceManager.attachRendererToRemoteStream(remoteRender, remoteStream, isScreenshare, null);
+    }
+
+    public void attachRendererToRemoteStream(VideoRenderer.Callbacks remoteRender, MediaStream remoteStream, boolean isScreenshare, String connectionId) {
+        mediaResourceManager.attachRendererToRemoteStream(remoteRender, remoteStream, isScreenshare, connectionId);
+    }
+
+    public void removeVideoRenderer(String connectionId) {
+        mediaResourceManager.removeVideoRenderer(connectionId);
     }
 
     public void removeAllVideoRenderers() {
@@ -673,17 +699,21 @@ public class NBMWebRTCPeer {
     public static class RendererAndStream {
         private VideoRenderer.Callbacks renderer;
         private MediaStream stream;
+        private String connectionId;
 
-        public RendererAndStream(VideoRenderer.Callbacks renderer, MediaStream stream) {
+        public RendererAndStream(VideoRenderer.Callbacks renderer, MediaStream stream, String connectionId) {
             this.renderer = renderer;
             this.stream = stream;
+            this.connectionId = connectionId;
         }
 
         VideoRenderer.Callbacks getRenderer() { return renderer; }
         MediaStream getStream() { return stream; }
+        String getConnectionId() { return connectionId; }
     }
 
     public void reattachSelfVideoRenderer(VideoRenderer.Callbacks renderer) {
+        this.localRender = renderer;
         mediaResourceManager.reattachSelfVideoRenderer(renderer);
     }
 

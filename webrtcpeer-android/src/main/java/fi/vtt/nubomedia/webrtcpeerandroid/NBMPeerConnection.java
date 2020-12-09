@@ -26,6 +26,7 @@ import org.webrtc.MediaStream;
 import org.webrtc.PeerConnection;
 import org.webrtc.SdpObserver;
 import org.webrtc.SessionDescription;
+
 import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.Vector;
@@ -52,6 +53,7 @@ public class NBMPeerConnection implements PeerConnection.Observer, SdpObserver {
     private boolean videoCallEnabled;
     private boolean preferH264;
     private boolean isInitiator;
+    private boolean isScreenshareConnection;
     private HashMap<String, ObservedDataChannel> observedDataChannels;
     private LinkedList<IceCandidate> queuedRemoteCandidates;
     MediaConstraints sdpMediaConstraints = null;
@@ -116,6 +118,12 @@ public class NBMPeerConnection implements PeerConnection.Observer, SdpObserver {
         peerConnectionParameters = params;
         queuedRemoteCandidates = new LinkedList<>();
         observedDataChannels = new HashMap<>();
+    }
+
+    public NBMPeerConnection(String connectionId, boolean preferIsac, boolean videoCallEnabled, boolean preferH264,
+                             LooperExecutor executor, NBMWebRTCPeer.NBMPeerConnectionParameters params, boolean isScreenshareConnection) {
+        this(connectionId, preferIsac, videoCallEnabled, preferH264, executor, params);
+        this.isScreenshareConnection = isScreenshareConnection;
     }
 
     public DataChannel createDataChannel(String label, DataChannel.Init init)
@@ -265,8 +273,11 @@ public class NBMPeerConnection implements PeerConnection.Observer, SdpObserver {
         if (preferIsac) {
             sdpDescription = preferCodec(sdpDescription, NBMMediaConfiguration.NBMAudioCodec.ISAC.toString(), true);
         }
-        if (videoCallEnabled && preferH264) {
-            sdpDescription = preferCodec(sdpDescription, NBMMediaConfiguration.NBMVideoCodec.H264.toString(), false);
+        if (!isScreenshareConnection) {
+            if (videoCallEnabled && preferH264) {
+                Log.i(TAG, "onCreateSuccess - preferH264: true");
+                sdpDescription = preferCodec(sdpDescription, NBMMediaConfiguration.NBMVideoCodec.H264.toString(), false);
+            }
         }
         final SessionDescription sdp = new SessionDescription(sessionDescription.type, sdpDescription);
         localSdp = sdp;
@@ -372,15 +383,18 @@ public class NBMPeerConnection implements PeerConnection.Observer, SdpObserver {
     }
 
     protected void setRemoteDescriptionSync(SessionDescription sdp) {
-        if (pc == null){// || isError) {
+        if (pc == null) {
             return;
         }
         String sdpDescription = sdp.description;
         if (preferIsac) {
             sdpDescription = preferCodec(sdpDescription, NBMMediaConfiguration.NBMAudioCodec.ISAC.toString(), true);
         }
-        if (videoCallEnabled && preferH264) {
-            sdpDescription = preferCodec(sdpDescription, NBMMediaConfiguration.NBMVideoCodec.H264.toString(), false);
+        if (!isScreenshareConnection) {
+            if (videoCallEnabled && preferH264) {
+                Log.i(TAG, "setRemoteDescriptionSync - preferH264: true");
+                sdpDescription = preferCodec(sdpDescription, NBMMediaConfiguration.NBMVideoCodec.H264.toString(), false);
+            }
         }
         if (videoCallEnabled && peerConnectionParameters.videoStartBitrate > 0) {
             sdpDescription = setStartBitrate(NBMMediaConfiguration.NBMVideoCodec.VP8.toString(), true, sdpDescription, peerConnectionParameters.videoStartBitrate);
