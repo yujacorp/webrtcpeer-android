@@ -17,24 +17,29 @@
 
 package fi.vtt.nubomedia.webrtcpeerandroid;
 
+import android.content.Context;
 import android.util.Log;
-import org.webrtc.CameraEnumerationAndroid;
+
+import org.webrtc.AudioTrack;
+import org.webrtc.Camera2Enumerator;
+import org.webrtc.CameraEnumerator;
+import org.webrtc.CameraVideoCapturer;
 import org.webrtc.DataChannel;
+import org.webrtc.EglBase;
 import org.webrtc.IceCandidate;
 import org.webrtc.Logging;
-import org.webrtc.MediaCodecVideoEncoder;
 import org.webrtc.MediaConstraints;
 import org.webrtc.MediaStream;
 import org.webrtc.PeerConnection;
 import org.webrtc.PeerConnectionFactory;
 import org.webrtc.SessionDescription;
-import org.webrtc.VideoCapturerAndroid;
-import org.webrtc.VideoRenderer;
+import org.webrtc.SurfaceTextureHelper;
+import org.webrtc.VideoCapturer;
+import org.webrtc.VideoSink;
 import org.webrtc.VideoSource;
 import org.webrtc.VideoTrack;
 
 import java.util.ArrayList;
-import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.List;
 
@@ -87,8 +92,6 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
     private static final int MAX_VIDEO_HEIGHT = 1280;
     private static final int MAX_VIDEO_FPS = 30;
 
-    private static final int numberOfCameras = CameraEnumerationAndroid.getDeviceCount();
-
     private static final String MAX_VIDEO_WIDTH_CONSTRAINT = "maxWidth";
     private static final String MIN_VIDEO_WIDTH_CONSTRAINT = "minWidth";
 
@@ -117,27 +120,28 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
 
     private boolean videoCallEnabled;
     private boolean renderVideo;
-    private boolean videoSourceStopped;
+    private boolean videoCapturerStopped;
 
     private MediaStream localMediaStream;
+    private SurfaceTextureHelper surfaceTextureHelper;
     private VideoSource videoSource;
     private VideoTrack localVideoTrack;
-    private VideoRenderer.Callbacks localRender;
-    private VideoRenderer localVideoRenderer;
+    private AudioTrack localAudioTrack;
+    private VideoSink localRenderer;
 
     private MediaStream screenshareMediaStream;
     private VideoTrack screenshareVideoTrack;
-    private VideoRenderer.Callbacks screenshareRenderer;
-    private VideoRenderer screenshareVideoRenderer;
+    private VideoSink screenshareRenderer;
 
     private NBMWebRTCPeer.NBMPeerConnectionParameters peerConnectionParameters;
-    private VideoCapturerAndroid videoCapturer;
+    private VideoCapturer videoCapturerNew;
     private NBMCameraPosition currentCameraPosition;
+    private CameraEnumerator cameraEnumerator;
 
-    // Callbacks -> VideoRenderer -> MediaStream -> VideoTrack
-    private HashMap<String, VideoRenderer.Callbacks> remoteVideoCallbacks;
-    private HashMap<VideoRenderer.Callbacks, VideoRenderer> remoteVideoRenderers;
-    private HashMap<VideoRenderer, MediaStream> remoteVideoMediaStreams;
+    // this is a pretty awkward configuration, we should use a hashmap instead
+    // String (clientId) -> VideoSink -> MediaStream -> VideoTrack
+    private HashMap<String, VideoSink> remoteVideoSinks;
+    private HashMap<VideoSink, MediaStream> remoteVideoMediaStreams;
     private HashMap<MediaStream, VideoTrack> remoteVideoTracks;
 
     // factor out self stream properties from videoCallEnabled
@@ -151,8 +155,7 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
         this.factory = factory;
         renderVideo = true;
 
-        remoteVideoCallbacks = new HashMap<>();
-        remoteVideoRenderers = new HashMap<>();
+        remoteVideoSinks = new HashMap<>();
         remoteVideoMediaStreams = new HashMap<>();
         remoteVideoTracks = new HashMap<>();
 
@@ -161,16 +164,24 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
         generateSelfStream = false;
     }
 
+    /**
+     * PeerConnectionFactory.createPeerConnection() w/ MediaConstraints is deprecated
+     *
+     * We likely do not need this anymore since we can set the "constraints" in the RTCConfiguration object
+     *
+     * References:
+     *  - https://bugs.chromium.org/p/webrtc/issues/detail?id=9239
+     *  - https://groups.google.com/g/discuss-webrtc/c/6j-bK_iyHkA
+     */
     void createPeerConnectionConstraints() {
         if (pcConstraints != null) {
             Log.i(TAG, "createPeerConnectionConstraints() - pcConstraints already created - do nothing");
             return;
         }
 
-        // Create peer connection constraints.
         pcConstraints = new MediaConstraints();
 
-        // Enable DTLS for normal calls and disable for loopback calls.
+        // enable DTLS for normal calls and disable for loopback calls
         if (peerConnectionParameters.loopback) {
             pcConstraints.optional.add(new MediaConstraints.KeyValuePair(DTLS_SRTP_KEY_AGREEMENT_CONSTRAINT, "false"));
         } else {
@@ -198,10 +209,10 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
         sdpMediaConstraints.optional.add(new MediaConstraints.KeyValuePair("internalSctpDataChannels", "true"));
     }
 
-    void createVideoConstraints(boolean selfVideoEnabled) {
+    void createVideoConstraints(boolean selfVideoEnabled, Context appContext) {
 
         // check if there is a camera on device and disable self stream if not
-        if (numberOfCameras == 0) {
+        if (getNumberOfCameras(appContext) == 0) {
             Log.w(TAG, "No camera on device. Switch to audio only call.");
             generateSelfStream = false;
         } else {
@@ -215,14 +226,7 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
             int videoWidth = peerConnectionParameters.videoWidth;
             int videoHeight = peerConnectionParameters.videoHeight;
 
-            // If VP8 HW video encoder is supported and video resolution is not
-            // specified force it to HD.
-            if ((videoWidth == 0 || videoHeight == 0) && peerConnectionParameters.videoCodecHwAcceleration && MediaCodecVideoEncoder.isVp8HwSupported()) {
-                videoWidth = HD_VIDEO_WIDTH;
-                videoHeight = HD_VIDEO_HEIGHT;
-            }
-
-            // Add video resolution constraints.
+            // video resolution constraints
             if (videoWidth > 0 && videoHeight > 0) {
                 videoWidth = Math.min(videoWidth, MAX_VIDEO_WIDTH);
                 videoHeight = Math.min(videoHeight, MAX_VIDEO_HEIGHT);
@@ -232,7 +236,7 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
                 videoConstraints.mandatory.add(new MediaConstraints.KeyValuePair(MAX_VIDEO_HEIGHT_CONSTRAINT, Integer.toString(videoHeight)));
             }
 
-            // Add fps constraints.
+            // fps constraints
             int videoFps = peerConnectionParameters.videoFps;
             if (videoFps > 0) {
                 videoFps = Math.min(videoFps, MAX_VIDEO_FPS);
@@ -242,6 +246,17 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
         } else {
             videoConstraints = null;
         }
+    }
+
+    private int getNumberOfCameras(Context appContext) {
+        initializeCameraEnumeratorIfNotBuiltYet(appContext);
+        if (cameraEnumerator == null) {
+            Log.e(TAG, "could not build cameraEnumerator");
+            return 0;
+        }
+
+        String[] deviceNames = cameraEnumerator.getDeviceNames();
+        return deviceNames.length;
     }
 
     void createAudioConstraints() {
@@ -257,9 +272,9 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
         }
     }
 
-    void createMediaConstraints(boolean selfAudioEnabled, boolean selfVideoEnabled) {
+    void createMediaConstraints(boolean selfAudioEnabled, boolean selfVideoEnabled, Context appContext) {
         createPeerConnectionConstraints();
-        createVideoConstraints(selfVideoEnabled);
+        createVideoConstraints(selfVideoEnabled, appContext);
         createAudioConstraints();
         createSDPMediaConstraints();
     }
@@ -276,87 +291,122 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
         return localMediaStream;
     }
 
-    void stopVideoSource() {
-        executor.execute(new Runnable() {
-            @Override
-            public void run() {
-                if (videoSource != null && !videoSourceStopped) {
-                    Log.d(TAG, "Stop video source.");
-                    videoSource.stop();
-                    videoSourceStopped = true;
+    void stopVideoCapturer() {
+        executor.execute(() -> {
+            if (videoCapturerNew != null && !videoCapturerStopped) {
+                Log.d(TAG, "attempt to stop video capturer");
+                try {
+                    videoCapturerNew.stopCapture();
+                } catch (InterruptedException e) {
+                    Log.e(TAG, "stop capture error: " + e.toString());
                 }
+                videoCapturerStopped = true;
             }
         });
     }
 
-    void disposeVideoSource() {
-        executor.execute(new Runnable() {
-            @Override
-            public void run() {
-                if (videoSource != null) {
-                    Log.d(TAG, "Dispose video source.");
-                    videoSource.dispose();
-                    videoSource = null;
-                }
+    void disposeVideoSource(boolean skipExecutor) {
+        if (skipExecutor) {
+            disposeVideoSourceInternal();
+        } else {
+            executor.execute(this::disposeVideoSourceInternal);
+        }
+    }
+
+    private void disposeVideoSourceInternal() {
+        if (videoSource != null) {
+            Log.d(TAG, "disposing video source");
+            videoSource.dispose();
+            videoSource = null;
+        }
+    }
+
+    void startVideoCapturer() {
+        executor.execute(() -> {
+            if (videoCapturerNew != null && videoCapturerStopped) {
+                Log.d(TAG, "restarting video capturer");
+                startCapturer();
+                videoCapturerStopped = false;
             }
         });
     }
 
-    void startVideoSource() {
-        executor.execute(new Runnable() {
-            @Override
-            public void run() {
-                if (videoSource != null && videoSourceStopped) {
-                    Log.d(TAG, "Restart video source.");
-                    videoSource.restart();
-                    videoSourceStopped = false;
-                }
+    void setLocalAudioTrackEnabled(final boolean enabled) {
+        executor.execute(() -> {
+            if (localAudioTrack != null) {
+                Log.i(TAG, "setting localAudioTrack enabled: " + enabled);
+                localAudioTrack.setEnabled(enabled);
+            } else {
+                Log.e(TAG, "localAudioTrack null - cannot set enabled: " + enabled);
             }
         });
     }
 
-    private VideoTrack createCapturerVideoTrack(VideoCapturerAndroid capturer) {
+    /**
+     * References:
+     *  - https://stackoverflow.com/questions/53148497/use-webrtc-videocapturer-without-peerconnection
+     */
+    private VideoTrack createCapturerVideoTrack(EglBase.Context eglBaseContext, Context appContext) {
 
-        Log.i(TAG, "creating local VideoSource & VideoRenderer");
+        Log.i(TAG, "creating video source + local video track");
 
-        videoSource = factory.createVideoSource(capturer, videoConstraints);
+        surfaceTextureHelper = SurfaceTextureHelper.create("CaptureThread", eglBaseContext);
+        videoSource = factory.createVideoSource(videoCapturerNew.isScreencast()); // looks like video MediaConstraints are no longer used
+        videoCapturerNew.initialize(surfaceTextureHelper, appContext, videoSource.getCapturerObserver());
+
+        startCapturer();
+
         localVideoTrack = factory.createVideoTrack(VIDEO_TRACK_ID, videoSource);
         localVideoTrack.setEnabled(renderVideo);
 
-        localVideoRenderer = new VideoRenderer(localRender);
-        localVideoTrack.addRenderer(localVideoRenderer);
+        if (localRenderer != null) {
+            localVideoTrack.addSink(localRenderer);
+        } else {
+            Log.e(TAG, "local renderer null - skip attach");
+        }
+
         return localVideoTrack;
+    }
+
+    private void startCapturer() {
+        if (videoCapturerNew == null) {
+            Log.e(TAG, "capturer null - cannot start");
+            return;
+        }
+
+        int width = peerConnectionParameters.videoWidth;
+        int height = peerConnectionParameters.videoHeight;
+        int fps = peerConnectionParameters.videoFps;
+        Log.i(TAG, "starting capture with: { width: " + width + ", height: " + height + ", fps: " + fps + " }");
+        videoCapturerNew.startCapture(width, height, fps);
     }
 
     private class AttachRendererTask implements Runnable {
 
-        private VideoRenderer.Callbacks remoteRender;
+        private VideoSink remoteRenderer;
         private MediaStream remoteStream;
-        private boolean isSharescreen;
+        private boolean isScreenshare;
         private String connectionId;
 
-        private AttachRendererTask(VideoRenderer.Callbacks remoteRender, MediaStream remoteStream) {
-            this.remoteRender = remoteRender;
+        private AttachRendererTask(VideoSink remoteRenderer, MediaStream remoteStream, boolean isScreenshare, String connectionId) {
+            this.remoteRenderer = remoteRenderer;
             this.remoteStream = remoteStream;
-            isSharescreen = false;
-            connectionId = null;
-        }
-
-        private AttachRendererTask(VideoRenderer.Callbacks remoteRender, MediaStream remoteStream, boolean isSharescreen, String connectionId) {
-            this.remoteRender = remoteRender;
-            this.remoteStream = remoteStream;
-            this.isSharescreen = isSharescreen;
+            this.isScreenshare = isScreenshare;
             this.connectionId = connectionId;
         }
 
         @Override
         public void run() {
-            Log.d(TAG, "Attaching VideoRenderer to remote stream (" + remoteStream + ")");
+            try {
+                Log.d(TAG, "attaching renderer to remote stream for " + connectionId);
 
-            if (isSharescreen) {
-                attachScreenshareVideoRenderer();
-            } else {
-                attachVideoRenderer();
+                if (isScreenshare) {
+                    attachScreenshareVideoRenderer();
+                } else {
+                    attachVideoRenderer();
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "AttachRendererTask error: " + e.toString());
             }
         }
 
@@ -364,7 +414,6 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
 
             Log.d(TAG, "attachScreenshareVideoRenderer()");
 
-            screenshareRenderer = remoteRender;
             screenshareMediaStream = remoteStream;
 
             // check if the remote stream has a video track
@@ -373,17 +422,18 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
                 return;
             }
 
-            if (screenshareVideoTrack != null && screenshareVideoRenderer != null) {
-                screenshareVideoTrack.removeRenderer(screenshareVideoRenderer);
+            // remove existing renderer if exists
+            if (screenshareVideoTrack != null && screenshareRenderer != null) {
+                Log.i(TAG, "removing existing screenshare renderer");
+                screenshareVideoTrack.removeSink(screenshareRenderer);
             }
+
+            // set new renderer
+            screenshareRenderer = remoteRenderer;
 
             screenshareVideoTrack = screenshareMediaStream.videoTracks.get(0);
             screenshareVideoTrack.setEnabled(renderVideo);
-
-            screenshareVideoRenderer = new VideoRenderer(screenshareRenderer);
-            screenshareVideoTrack.addRenderer(screenshareVideoRenderer);
-
-            Log.d(TAG, "attached");
+            screenshareVideoTrack.addSink(screenshareRenderer);
         }
 
         private void attachVideoRenderer() {
@@ -399,47 +449,41 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
             VideoTrack remoteVideoTrack = remoteStream.videoTracks.get(0);
             remoteVideoTrack.setEnabled(renderVideo);
 
-            VideoRenderer videoRenderer = remoteVideoRenderers.get(remoteRender);
-            if (videoRenderer != null) {
-                MediaStream mediaStream = remoteVideoMediaStreams.get(videoRenderer);
+            // check if existing sink is present
+            VideoSink existingVideoSink = remoteVideoSinks.get(connectionId);
+            if (existingVideoSink != null) {
+                MediaStream mediaStream = remoteVideoMediaStreams.get(existingVideoSink);
                 if (mediaStream != null) {
                     VideoTrack videoTrack = remoteVideoTracks.get(mediaStream);
                     if (videoTrack != null) {
-                        videoTrack.removeRenderer(videoRenderer);
+
+                        Log.i(TAG, "removing existing video sink");
+                        videoTrack.removeSink(existingVideoSink);
                     }
                 }
             }
 
-            VideoRenderer newVideoRenderer = new VideoRenderer(remoteRender);
-            remoteVideoTrack.addRenderer(newVideoRenderer);
+            remoteVideoTrack.addSink(remoteRenderer);
 
             if (connectionId != null) {
-                remoteVideoCallbacks.put(connectionId, remoteRender);
+                // add new sink to map
+                remoteVideoSinks.put(connectionId, remoteRenderer);
             } else {
                 Log.e(TAG, "connectionId null");
             }
 
-            remoteVideoRenderers.put(remoteRender, newVideoRenderer);
-            remoteVideoMediaStreams.put(newVideoRenderer, remoteStream);
+            remoteVideoMediaStreams.put(remoteRenderer, remoteStream);
             remoteVideoTracks.put(remoteStream, remoteVideoTrack);
-
-            Log.d(TAG, "attached");
         }
     }
 
-    // unused
-    void attachRendererToRemoteStream(VideoRenderer.Callbacks remoteRender, MediaStream remoteStream) {
-        Log.d(TAG, "Schedule attaching VideoRenderer to remote stream (" + remoteStream + ")");
-        executor.execute(new AttachRendererTask(remoteRender, remoteStream));
-    }
-
-    void attachRendererToRemoteStream(VideoRenderer.Callbacks remoteRender, MediaStream remoteStream, boolean isScreenshare, String connectionId) {
-        Log.d(TAG, "Schedule attaching VideoRenderer to remote stream (" + remoteStream + ")");
+    void attachRendererToRemoteStream(VideoSink remoteRender, MediaStream remoteStream, boolean isScreenshare, String connectionId) {
+        Log.d(TAG, "attaching renderer to remote stream for " + connectionId);
         executor.execute(new AttachRendererTask(remoteRender, remoteStream, isScreenshare, connectionId));
     }
 
     void removeScreenshareVideoRenderer() {
-        Log.d(TAG, "Removing screenshare video renderer");
+        Log.d(TAG, "removing screenshare video renderer");
         executor.execute(new RemoveScreenshareVideoRendererTask());
     }
 
@@ -449,30 +493,32 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
 
         @Override
         public void run() {
+            try {
+                if (screenshareVideoTrack != null) {
+                    screenshareVideoTrack.setEnabled(false);
+                } else {
+                    Log.e(TAG, "screenshareVideoTrack null");
+                    return;
+                }
 
-            if (screenshareVideoTrack != null) {
-                screenshareVideoTrack.setEnabled(false);
-            } else {
-                Log.e(TAG, "screenshareVideoTrack null");
-                return;
-            }
-
-            if (screenshareVideoRenderer != null) {
-                screenshareVideoTrack.removeRenderer(screenshareVideoRenderer);
-                screenshareVideoRenderer.dispose();
-                screenshareVideoRenderer = null;
+                if (screenshareRenderer != null) {
+                    screenshareVideoTrack.removeSink(screenshareRenderer);
+                    screenshareRenderer = null;
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "RemoveScreenshareVideoRendererTask error: " + e.toString());
             }
         }
     }
 
     void removeVideoRenderer(String connectionId) {
-        Log.d(TAG, "Removing video renderer for: " + connectionId);
+        Log.d(TAG, "removing video renderer for: " + connectionId);
         executor.execute(new RemoveVideoRendererTask(connectionId));
     }
 
     private class RemoveVideoRendererTask implements Runnable {
 
-        private String connectionId;
+        private final String connectionId;
 
         RemoveVideoRendererTask(String connectionId) {
             this.connectionId = connectionId;
@@ -480,31 +526,28 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
 
         @Override
         public void run() {
+            try {
+                // detach renderer
+                detachRenderer();
 
-            // detach renderer
-            detachRenderer();
-
-            // remove from maps
-            onRemoteVideoConnectionClosed(connectionId);
+                // remove from maps
+                onRemoteVideoConnectionClosed(connectionId);
+            } catch (Exception e) {
+                Log.e(TAG, "RemoveVideoRendererTask error: " + e.toString());
+            }
         }
 
         private void detachRenderer() {
 
-            Log.i(TAG, "Detaching renderer");
+            Log.i(TAG, "detaching renderer for " + connectionId);
 
-            VideoRenderer.Callbacks callbacks = remoteVideoCallbacks.get(connectionId);
-            if (callbacks == null) {
-                Log.e(TAG, "cannot find Callbacks for: " + connectionId);
+            VideoSink videoSink = remoteVideoSinks.get(connectionId);
+            if (videoSink == null) {
+                Log.e(TAG, "cannot find videoSink for: " + connectionId);
                 return;
             }
 
-            VideoRenderer videoRenderer = remoteVideoRenderers.get(callbacks);
-            if (videoRenderer == null) {
-                Log.e(TAG, "cannot find VideoRenderer for: " + connectionId);
-                return;
-            }
-
-            MediaStream videoStream = remoteVideoMediaStreams.get(videoRenderer);
+            MediaStream videoStream = remoteVideoMediaStreams.get(videoSink);
             if (videoStream == null) {
                 Log.e(TAG, "cannot find MediaStream for: " + connectionId);
                 return;
@@ -516,15 +559,12 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
                 return;
             }
 
-            videoTrack.removeRenderer(videoRenderer);
-            videoRenderer.dispose();
-
-            Log.i(TAG, "Finish detach, renderer disposed");
+            videoTrack.removeSink(videoSink);
         }
     }
 
     void removeAllVideoRenderers() {
-        Log.d(TAG, "Removing all video renderers");
+        Log.d(TAG, "removing all video renderers");
         executor.execute(new RemoveAllVideoRenderersTask());
     }
 
@@ -534,8 +574,12 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
 
         @Override
         public void run() {
-            removeSelfVideoRenderer();
-            removeRemoteVideoRenderers();
+            try {
+                removeSelfVideoRenderer();
+                removeRemoteVideoRenderers();
+            } catch (Exception e) {
+                Log.e(TAG, "RemoveAllVideoRenderersTask error: " + e.toString());
+            }
         }
 
         private void removeRemoteVideoRenderers() {
@@ -548,11 +592,11 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
             }
 
             // remove all renderers
-            List<VideoRenderer> videoRenderers = new ArrayList<>(remoteVideoRenderers.values());
-            for (VideoRenderer videoRenderer: videoRenderers) {
+            List<VideoSink> videoSinks = new ArrayList<>(remoteVideoSinks.values());
+            for (VideoSink videoSink: videoSinks) {
 
                 // get MediaStream from renderer
-                MediaStream mediaStream = remoteVideoMediaStreams.get(videoRenderer);
+                MediaStream mediaStream = remoteVideoMediaStreams.get(videoSink);
                 if (mediaStream == null) {
                     Log.e(TAG, "RemoveAllRenderersTask - mediaStream null");
                     continue;
@@ -565,11 +609,9 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
                     continue;
                 }
 
-                videoTrack.removeRenderer(videoRenderer);
-                videoRenderer.dispose();
+                videoTrack.removeSink(videoSink);
             }
 
-            remoteVideoRenderers.clear();
             remoteVideoMediaStreams.clear();
             remoteVideoTracks.clear();
         }
@@ -581,52 +623,51 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
                 return;
             }
 
-            if (localVideoRenderer == null) {
-                Log.e(TAG, "localVideoRenderer already null - do nothing");
+            if (localRenderer == null) {
+                Log.e(TAG, "localRenderer already null - do nothing");
                 return;
             }
 
-            localVideoTrack.removeRenderer(localVideoRenderer);
-            localVideoRenderer.dispose();
-            localVideoRenderer = null;
-            localRender = null;
+            localVideoTrack.removeSink(localRenderer);
+            localRenderer = null;
         }
     }
 
-    void reattachSelfVideoRenderer(VideoRenderer.Callbacks renderer) {
+    void reattachSelfVideoRenderer(VideoSink renderer) {
         Log.d(TAG, "re-attaching self video renderer");
         executor.execute(new ReattachSelfVideoRendererTask(renderer));
     }
 
     private class ReattachSelfVideoRendererTask implements Runnable {
 
-        private VideoRenderer.Callbacks renderer;
+        private final VideoSink renderer;
 
-        ReattachSelfVideoRendererTask(VideoRenderer.Callbacks renderer) {
+        ReattachSelfVideoRendererTask(VideoSink renderer) {
             this.renderer = renderer;
         }
 
         @Override
         public void run() {
-            Log.d(TAG, "ReattachSelfVideoRendererTask start");
+            try {
 
-            localRender = renderer;
+                Log.d(TAG, "ReattachSelfVideoRendererTask start");
 
-            if (localVideoTrack == null) {
-                Log.d(TAG, "localVideoTrack null, perhaps uncreated");
-                return;
+                if (localVideoTrack == null) {
+                    Log.d(TAG, "localVideoTrack null, perhaps uncreated");
+                    return;
+                }
+
+                if (localRenderer != null) {
+                    Log.e(TAG, "localVideoRenderer not disposed before reattach");
+                    localVideoTrack.removeSink(localRenderer);
+                }
+
+                // attach new renderer
+                localRenderer = renderer;
+                localVideoTrack.addSink(localRenderer);
+            } catch (Exception e) {
+                Log.e(TAG, "ReattachSelfVideoRendererTask error: " + e.toString());
             }
-
-            if (localVideoRenderer != null) {
-                Log.e(TAG, "localVideoRenderer not disposed before reattach");
-                localVideoTrack.removeRenderer(localVideoRenderer);
-                localVideoRenderer.dispose();
-            }
-
-            localVideoRenderer = new VideoRenderer(localRender);
-            localVideoTrack.addRenderer(localVideoRenderer);
-
-            Log.d(TAG, "self re-attached");
         }
     }
 
@@ -645,85 +686,84 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
 
         @Override
         public void run() {
+            try {
 
-            Log.d(TAG, "ReattachAllRemoteVideoRenderersTask start");
+                Log.d(TAG, "ReattachAllRemoteVideoRenderersTask start");
 
-            if (renderersAndStreams == null || renderersAndStreams.isEmpty()) {
-                Log.e(TAG, "renderersAndStreams empty - do nothing");
-                return;
-            }
-
-            for (NBMWebRTCPeer.RendererAndStream rendererAndStream: renderersAndStreams) {
-                MediaStream stream = rendererAndStream.getStream();
-                VideoRenderer.Callbacks renderer = rendererAndStream.getRenderer();
-                String connectionId = rendererAndStream.getConnectionId();
-
-                // check if the remote stream has a video track
-                if (stream.videoTracks.size() != 1) {
-                    Log.e(TAG, "stream videoTracks size != 1, skip");
-                    continue;
+                if (renderersAndStreams == null || renderersAndStreams.isEmpty()) {
+                    Log.e(TAG, "renderersAndStreams empty - do nothing");
+                    return;
                 }
 
-                VideoTrack remoteVideoTrack = stream.videoTracks.get(0);
-                remoteVideoTrack.setEnabled(renderVideo);
+                for (NBMWebRTCPeer.RendererAndStream rendererAndStream: renderersAndStreams) {
+                    MediaStream stream = rendererAndStream.getStream();
+                    VideoSink renderer = rendererAndStream.getRenderer();
+                    String connectionId = rendererAndStream.getConnectionId();
 
-                VideoRenderer newVideoRenderer = new VideoRenderer(renderer);
-                remoteVideoTrack.addRenderer(newVideoRenderer);
+                    // check if the remote stream has a video track
+                    if (stream.videoTracks.size() != 1) {
+                        Log.e(TAG, "stream videoTracks size != 1, skip");
+                        continue;
+                    }
 
-                remoteVideoCallbacks.put(connectionId, renderer);
-                remoteVideoRenderers.put(renderer, newVideoRenderer);
-                remoteVideoMediaStreams.put(newVideoRenderer, stream);
-                remoteVideoTracks.put(stream, remoteVideoTrack);
+                    VideoTrack remoteVideoTrack = stream.videoTracks.get(0);
+                    remoteVideoTrack.setEnabled(renderVideo);
+                    remoteVideoTrack.addSink(renderer);
+
+                    remoteVideoSinks.put(connectionId, renderer);
+                    remoteVideoMediaStreams.put(renderer, stream);
+                    remoteVideoTracks.put(stream, remoteVideoTrack);
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "ReattachAllRemoteVideoRenderersTask error: " + e.toString());
             }
-
-            Log.d(TAG, "streams re-attached");
         }
     }
 
-    void reattachScreenshareVideoRenderer(VideoRenderer.Callbacks renderer) {
+    void reattachScreenshareVideoRenderer(VideoSink renderer) {
         Log.d(TAG, "re-attaching screenshare renderer");
         executor.execute(new ReattachScreenshareVideoRenderer(renderer));
     }
 
     private class ReattachScreenshareVideoRenderer implements Runnable {
 
-        private VideoRenderer.Callbacks renderer;
+        private VideoSink renderer;
 
-        public ReattachScreenshareVideoRenderer(VideoRenderer.Callbacks renderer) {
+        public ReattachScreenshareVideoRenderer(VideoSink renderer) {
             this.renderer = renderer;
         }
 
         @Override
         public void run() {
-            Log.d(TAG, "ReattachScreenshareVideoRenderer start");
+            try {
 
-            screenshareRenderer = renderer;
+                Log.d(TAG, "ReattachScreenshareVideoRenderer start");
 
-            if (screenshareMediaStream == null) {
-                Log.e(TAG, "screenshareMediaStream null - CANNOT reattach renderer");
-                return;
+                if (screenshareMediaStream == null) {
+                    Log.e(TAG, "screenshareMediaStream null - CANNOT reattach renderer");
+                    return;
+                }
+
+                // check if the remote stream has a video track
+                if (screenshareMediaStream.videoTracks.size() != 1) {
+                    Log.e(TAG, "screenshare videoTracks size != 1");
+                    return;
+                }
+
+                if (screenshareVideoTrack != null && screenshareRenderer != null) {
+                    Log.e(TAG, "screenshare renderer not disposed before re-attach");
+                    screenshareVideoTrack.removeSink(screenshareRenderer);
+                }
+
+                // set to new renderer
+                screenshareRenderer = renderer;
+
+                screenshareVideoTrack = screenshareMediaStream.videoTracks.get(0);
+                screenshareVideoTrack.setEnabled(renderVideo);
+                screenshareVideoTrack.addSink(screenshareRenderer);
+            } catch (Exception e) {
+                Log.e(TAG, "ReattachScreenshareVideoRenderer error: " + e.toString());
             }
-
-            // check if the remote stream has a video track
-            if (screenshareMediaStream.videoTracks.size() != 1) {
-                Log.e(TAG, "screenshare videoTracks size != 1");
-                return;
-            }
-
-            if (screenshareVideoTrack != null && screenshareVideoRenderer != null) {
-                Log.e(TAG, "screenshare renderer not disposed before re-attach");
-                screenshareVideoTrack.removeRenderer(screenshareVideoRenderer);
-                screenshareVideoRenderer.dispose();
-                screenshareVideoRenderer = null;
-            }
-
-            screenshareVideoTrack = screenshareMediaStream.videoTracks.get(0);
-            screenshareVideoTrack.setEnabled(renderVideo);
-
-            screenshareVideoRenderer = new VideoRenderer(screenshareRenderer);
-            screenshareVideoTrack.addRenderer(screenshareVideoRenderer);
-
-            Log.d(TAG, "screenshare re-attached");
         }
     }
 
@@ -731,32 +771,23 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
 
         Log.i(TAG, "remote video connection closed, remove from maps");
 
-        // remove from callbacks
-        VideoRenderer.Callbacks remoteVideoCallback = remoteVideoCallbacks.get(connectionId);
-        if (remoteVideoCallback == null) {
+        // remove from sinks
+        VideoSink remoteVideoSink = remoteVideoSinks.get(connectionId);
+        if (remoteVideoSink == null) {
             Log.e(TAG, "cannot find remoteVideoCallback for: " + connectionId);
             return;
         }
 
-        remoteVideoCallbacks.remove(connectionId);
-
-        // remove from renderers
-        VideoRenderer remoteVideoRenderer = remoteVideoRenderers.get(remoteVideoCallback);
-        if (remoteVideoRenderer == null) {
-            Log.e(TAG, "cannot find remoteVideoRenderer for: " + connectionId);
-            return;
-        }
-
-        remoteVideoRenderers.remove(remoteVideoCallback);
+        remoteVideoSinks.remove(connectionId);
 
         // remove from mediastreams
-        MediaStream remoteVideoStream = remoteVideoMediaStreams.get(remoteVideoRenderer);
+        MediaStream remoteVideoStream = remoteVideoMediaStreams.get(remoteVideoSink);
         if (remoteVideoStream == null) {
             Log.e(TAG, "cannot find remoteVideoStream for: " + connectionId);
             return;
         }
 
-        remoteVideoMediaStreams.remove(remoteVideoRenderer);
+        remoteVideoMediaStreams.remove(remoteVideoSink);
 
         // remove from videotracks
         VideoTrack remoteVideoTrack = remoteVideoTracks.get(remoteVideoStream);
@@ -766,136 +797,233 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
         }
 
         remoteVideoTracks.remove(remoteVideoStream);
-
-        Log.i(TAG, "removal finished");
     }
 
-    void createLocalMediaStream(Object renderEGLContext, final VideoRenderer.Callbacks localRender) {
+    void createLocalMediaStream(EglBase.Context renderEGLContext, final VideoSink localRenderer, boolean selfAudioEnabled, boolean selfVideoEnabled, Context appContext) {
+
+        Log.i(TAG, "attempt to create local media stream");
+
         if (factory == null) {
-            Log.e(TAG, "Peerconnection factory is not created");
+            Log.e(TAG, "peer connection factory is not created - cannot create local media stream");
             return;
         }
-        this.localRender = localRender;
-        if (generateSelfStream) {
-            factory.setVideoHwAccelerationOptions(renderEGLContext, renderEGLContext);
-        }
 
-        // Set default WebRTC tracing and INFO libjingle logging.
+        this.localRenderer = localRenderer;
+
+        // Set INFO libjingle logging.
         // NOTE: this _must_ happen while |factory| is alive!
-        Logging.enableTracing("logcat:", EnumSet.of(Logging.TraceLevel.TRACE_DEFAULT), Logging.Severity.LS_INFO);
+        Logging.enableLogToDebugOutput(Logging.Severity.LS_INFO);
 
         localMediaStream = factory.createLocalMediaStream("ARDAMS");
 
-        // If video call is enabled and the device has camera(s)
+        // video call enabled and the device has camera(s)
         if (generateSelfStream) {
-            String cameraDeviceName; // = CameraEnumerationAndroid.getDeviceName(0);
-            String frontCameraDeviceName = CameraEnumerationAndroid.getNameOfFrontFacingDevice();
-            String backCameraDeviceName = CameraEnumerationAndroid.getNameOfBackFacingDevice();
-
-            // If current camera is set to front and the device has one
-            if (currentCameraPosition==NBMCameraPosition.FRONT && frontCameraDeviceName!=null) {
-                cameraDeviceName = frontCameraDeviceName;
-            }
-            // If current camera is set to back and the device has one
-            else if (currentCameraPosition==NBMCameraPosition.BACK && backCameraDeviceName!=null) {
-                cameraDeviceName = backCameraDeviceName;
-            }
-            // If current camera is set to any then we pick the first camera of the device, which
-            // should be a back-facing camera according to libjingle API
-            else {
-                cameraDeviceName = CameraEnumerationAndroid.getDeviceName(0);
-                currentCameraPosition = NBMCameraPosition.BACK;
-            }
-
-            Log.d(TAG, "Opening camera: " + cameraDeviceName);
-            videoCapturer = VideoCapturerAndroid.create(cameraDeviceName, null);
-            if (videoCapturer == null) {
-                Log.d(TAG, "Error while opening camera");
+            Log.i(TAG, "trying to create video capturer");
+            videoCapturerNew = createVideoCapturerNew(appContext, currentCameraPosition);
+            if (videoCapturerNew == null) {
+                Log.e(TAG, "could not open camera");
                 return;
             }
-            localMediaStream.addTrack(createCapturerVideoTrack(videoCapturer));
+
+            localMediaStream.addTrack(createCapturerVideoTrack(renderEGLContext, appContext));
         }
 
-        // Create audio track
-        localMediaStream.addTrack(factory.createAudioTrack(AUDIO_TRACK_ID, factory.createAudioSource(audioConstraints)));
+        // create audio track
+        localAudioTrack = factory.createAudioTrack(AUDIO_TRACK_ID, factory.createAudioSource(audioConstraints));
 
-        Log.d(TAG, "Local media stream created.");
+        Log.i(TAG, "setting localAudioTrack enabled: " + selfAudioEnabled);
+        localAudioTrack.setEnabled(selfAudioEnabled);
+        localMediaStream.addTrack(localAudioTrack);
     }
 
-    void selectCameraPosition(final NBMCameraPosition position){
-        if (!generateSelfStream || videoCapturer == null || !hasCameraPosition(position)) {
-            Log.e(TAG, "Failed to switch camera. Video: " + generateSelfStream + ". . Number of cameras: " + numberOfCameras);
+    /**
+     * New library apis support local screen captures and "file videos";
+     *  We can look to support these feature in the future
+     */
+    private VideoCapturer createVideoCapturerNew(Context appContext, NBMCameraPosition position) {
+        try {
+            initializeCameraEnumeratorIfNotBuiltYet(appContext);
+            return createCameraCapturer(position);
+        } catch (Exception e) {
+            Log.e(TAG, "could not create camera capturer, error: " + e.toString());
+            return null;
+        }
+    }
+
+    private void initializeCameraEnumeratorIfNotBuiltYet(Context appContext) {
+        try {
+            // assume we can use camera2
+            if (cameraEnumerator == null) {
+                Log.i(TAG, "initializing camera enumerator");
+                cameraEnumerator = new Camera2Enumerator(appContext);
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "could not initialize camera enumerator");
+        }
+    }
+
+    private VideoCapturer createCameraCapturer(NBMCameraPosition position) {
+
+        VideoCapturer capturer = null;
+        if (position == NBMCameraPosition.FRONT) {
+            capturer = tryToCreateFrontFacingVideoCapturer();
+        } else if (position == NBMCameraPosition.BACK) {
+            capturer = tryToCreateBackFacingVideoCapturer();
+        }
+
+        if (capturer == null) {
+            Log.e(TAG, "could not create capturer facing: " + position);
+            capturer = tryToCreateAnyFacingVideoCapturer();
+        }
+
+        return capturer;
+    }
+
+    private VideoCapturer tryToCreateFrontFacingVideoCapturer() {
+
+        if (cameraEnumerator == null) {
+            Log.e(TAG, "camera enumerator null");
+            return null;
+        }
+
+        String[] deviceNames = cameraEnumerator.getDeviceNames();
+        Log.i(TAG, "looking for a front facing camera");
+
+        for (String deviceName: deviceNames) {
+            if (cameraEnumerator.isFrontFacing(deviceName)) {
+
+                VideoCapturer capturer = cameraEnumerator.createCapturer(deviceName, null);
+                if (capturer != null) {
+                    Log.i(TAG, "created capturer from front facing camera: " + deviceName);
+                    return capturer;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private VideoCapturer tryToCreateBackFacingVideoCapturer() {
+
+        if (cameraEnumerator == null) {
+            Log.e(TAG, "camera enumerator null");
+            return null;
+        }
+
+        String[] deviceNames = cameraEnumerator.getDeviceNames();
+        Log.i(TAG, "looking for a back facing camera");
+
+        for (String deviceName: deviceNames) {
+            if (cameraEnumerator.isBackFacing(deviceName)) {
+
+                VideoCapturer capturer = cameraEnumerator.createCapturer(deviceName, null);
+                if (capturer != null) {
+                    Log.i(TAG, "created capturer from back facing camera: " + deviceName);
+                    return capturer;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private VideoCapturer tryToCreateAnyFacingVideoCapturer() {
+
+        if (cameraEnumerator == null) {
+            Log.e(TAG, "camera enumerator null");
+            return null;
+        }
+
+        String[] deviceNames = cameraEnumerator.getDeviceNames();
+        Log.i(TAG, "looking for any facing camera");
+
+        for (String deviceName: deviceNames) {
+            VideoCapturer capturer = cameraEnumerator.createCapturer(deviceName, null);
+            if (capturer != null) {
+                Log.i(TAG, "created capturer from back facing camera: " + deviceName);
+                return capturer;
+            }
+        }
+
+        return null;
+    }
+
+    void selectCameraPosition(final NBMCameraPosition position, Context appContext){
+        if (!generateSelfStream || videoCapturerNew == null || !hasCameraPosition(position, appContext)) {
+            Log.e(TAG, "failed to switch camera, number of cameras: " + getNumberOfCameras(appContext));
             return;
         }
+
         if (position != currentCameraPosition) {
-            executor.execute(new Runnable() {
-                @Override
-                public void run() {
-                    Log.d(TAG, "Switch camera");
-                    videoCapturer.switchCamera(null);
-                    currentCameraPosition = position;
+            executor.execute(() -> {
+                Log.d(TAG, "switching camera to position: " + position);
+                CameraVideoCapturer cameraVideoCapturer = (CameraVideoCapturer) videoCapturerNew;
+
+                String deviceName = getFirstCameraDeviceName(position);
+                if (deviceName != null) {
+                    cameraVideoCapturer.switchCamera(null, deviceName);
+                } else {
+                    Log.e(TAG, "could not get camera device name, cycling through cameras instead");
+                    cameraVideoCapturer.switchCamera(null);
                 }
+
+                currentCameraPosition = position;
             });
         }
     }
 
-    void switchCamera(){
-        if (!generateSelfStream || videoCapturer == null) {
-            Log.e(TAG, "Failed to switch camera. Video: " + generateSelfStream + ". . Number of cameras: " + numberOfCameras);
-            return;
-        }
-        executor.execute(new Runnable() {
-            @Override
-            public void run() {
-                Log.d(TAG, "Switch camera");
-                videoCapturer.switchCamera(null);
-                if (currentCameraPosition==NBMCameraPosition.BACK) {
-                    currentCameraPosition = NBMCameraPosition.FRONT;
-                } else {
-                    currentCameraPosition = NBMCameraPosition.BACK;
-                }
-            }
-        });
-    }
-
-    void setVideoEnabled(final boolean enable) {
-        executor.execute(new Runnable() {
-            @Override
-            public void run() {
-                renderVideo = enable;
-                if (localVideoTrack != null) {
-                    localVideoTrack.setEnabled(renderVideo);
-                }
-                for (VideoTrack tv: remoteVideoTracks.values()) {
-                    tv.setEnabled(renderVideo);
-                }
-            }
-        });
-    }
-
-    boolean getVideoEnabled() {
-        return renderVideo;
-    }
-
-    boolean hasCameraPosition(NBMMediaConfiguration.NBMCameraPosition position) {
-        boolean retMe = false;
-
-        String backName = CameraEnumerationAndroid.getNameOfBackFacingDevice();
-        String frontName = CameraEnumerationAndroid.getNameOfFrontFacingDevice();
-
-        if (position == NBMMediaConfiguration.NBMCameraPosition.ANY &&
-                (backName != null || frontName != null)){
-            retMe = true;
-        } else if (position == NBMMediaConfiguration.NBMCameraPosition.BACK &&
-                backName != null){
-            retMe = true;
-
-        } else if (position == NBMMediaConfiguration.NBMCameraPosition.FRONT &&
-                frontName != null){
-            retMe = true;
+    private String getFirstCameraDeviceName(NBMCameraPosition position) {
+        if (cameraEnumerator == null) {
+            Log.e(TAG, "camera enumerator null");
+            return null;
         }
 
-        return retMe;
+        String[] deviceNames = cameraEnumerator.getDeviceNames();
+        Log.i(TAG, "looking for a front facing camera");
+
+        for (String deviceName: deviceNames) {
+            if (position == NBMCameraPosition.ANY) {
+                return deviceName;
+            } else if (position == NBMCameraPosition.FRONT && cameraEnumerator.isFrontFacing(deviceName)) {
+                return deviceName;
+            } else if (position == NBMCameraPosition.BACK && cameraEnumerator.isBackFacing(deviceName)) {
+                return deviceName;
+            }
+        }
+
+        return null;
+    }
+
+    boolean hasCameraPosition(NBMMediaConfiguration.NBMCameraPosition position, Context appContext) {
+
+        initializeCameraEnumeratorIfNotBuiltYet(appContext);
+        if (cameraEnumerator == null) {
+            Log.e(TAG, "could not build camera enumerator");
+            return false;
+        }
+
+        String[] deviceNames = cameraEnumerator.getDeviceNames();
+
+        switch (position) {
+            case ANY:
+                return deviceNames.length > 0;
+            case FRONT:
+                for (String deviceName: deviceNames) {
+                    if (cameraEnumerator.isFrontFacing(deviceName)) {
+                        return true;
+                    }
+                }
+                return false;
+            case BACK:
+                for (String deviceName: deviceNames) {
+                    if (cameraEnumerator.isBackFacing(deviceName)) {
+                        return true;
+                    }
+                }
+                return false;
+            default:
+                return false;
+        }
     }
 
     void close() {
@@ -904,65 +1032,63 @@ final class MediaResourceManager implements NBMWebRTCPeer.Observer {
             localMediaStream = null;
         }
 
-        if (videoCapturer != null) {
-            videoCapturer.dispose();
-            videoCapturer = null;
+        if (videoCapturerNew != null) {
+            try {
+                videoCapturerNew.stopCapture();
+            } catch (InterruptedException e) {
+                Log.e(TAG, "could not stop capturer");
+            }
+            videoCapturerNew.dispose();
+            videoCapturerNew = null;
         }
 
         if (localVideoTrack != null) {
             localVideoTrack = null;
         }
+
+        if (localAudioTrack != null) {
+            localAudioTrack = null;
+        }
+
+        if (surfaceTextureHelper != null) {
+            surfaceTextureHelper.dispose();
+            surfaceTextureHelper = null;
+        }
     }
 
-    @Override
-    public void onInitialize() {}
-
-    @Override
-    public void onLocalSdpOfferGenerated(SessionDescription localSdpOffer, NBMPeerConnection connection) {
+    void clearMaps() {
+        remoteVideoTracks.clear();
+        remoteVideoMediaStreams.clear();
+        remoteVideoSinks.clear();
     }
 
-    @Override
-    public void onLocalSdpAnswerGenerated(SessionDescription localSdpAnswer, NBMPeerConnection connection) {
+    void clearScreenshare() {
+        screenshareVideoTrack = null;
+        screenshareMediaStream = null;
+        screenshareRenderer = null;
     }
 
-    @Override
-    public void onIceCandidate(IceCandidate localIceCandidate, NBMPeerConnection connection) {
-    }
+    // interface methods
 
-    @Override
-    public void onIceStatusChanged(PeerConnection.IceConnectionState state, NBMPeerConnection connection) {
-    }
+    @Override public void onInitialize() {}
 
-    @Override
-    public void onRemoteStreamAdded(MediaStream stream, NBMPeerConnection connection) {
-    }
+    @Override public void onLocalSdpOfferGenerated(SessionDescription localSdpOffer, NBMPeerConnection connection) {}
+    @Override public void onLocalSdpAnswerGenerated(SessionDescription localSdpAnswer, NBMPeerConnection connection) {}
+
+    @Override public void onIceCandidate(IceCandidate localIceCandidate, NBMPeerConnection connection) {}
+    @Override public void onIceStatusChanged(PeerConnection.IceConnectionState state, NBMPeerConnection connection) {}
+
+    @Override public void onRemoteStreamAdded(MediaStream stream, NBMPeerConnection connection) {}
 
     @Override
     public void onRemoteStreamRemoved(MediaStream stream, NBMPeerConnection connection) {
         remoteVideoTracks.remove(stream);
     }
 
-    @Override
-    public void onPeerConnectionError(String error) {
-    }
+    @Override public void onPeerConnectionError(String error) {}
 
-    @Override
-    public void onDataChannel(DataChannel dataChannel, NBMPeerConnection connection) {
-
-    }
-
-    @Override
-    public void onBufferedAmountChange(long l, NBMPeerConnection connection, DataChannel channel) {
-
-    }
-
-    @Override
-    public void onStateChange(NBMPeerConnection connection, DataChannel channel) {
-
-    }
-
-    @Override
-    public void onMessage(DataChannel.Buffer buffer, NBMPeerConnection connection, DataChannel channel) {
-
-    }
+    @Override public void onDataChannel(DataChannel dataChannel, NBMPeerConnection connection) {}
+    @Override public void onBufferedAmountChange(long l, NBMPeerConnection connection, DataChannel channel) {}
+    @Override public void onStateChange(NBMPeerConnection connection, DataChannel channel) {}
+    @Override public void onMessage(DataChannel.Buffer buffer, NBMPeerConnection connection, DataChannel channel) {}
 }

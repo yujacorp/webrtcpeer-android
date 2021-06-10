@@ -23,7 +23,6 @@ import org.webrtc.MediaConstraints;
 import org.webrtc.PeerConnection;
 import org.webrtc.PeerConnectionFactory;
 import java.util.Collection;
-import java.util.EnumSet;
 import java.util.HashMap;
 import fi.vtt.nubomedia.utilitiesandroid.LooperExecutor;
 import fi.vtt.nubomedia.webrtcpeerandroid.NBMWebRTCPeer.NBMPeerConnectionParameters;
@@ -48,26 +47,17 @@ final class PeerConnectionResourceManager {
     private NBMPeerConnectionParameters peerConnectionParameters;
 
     PeerConnectionResourceManager(NBMPeerConnectionParameters peerConnectionParameters,
-                                  LooperExecutor executor, PeerConnectionFactory factory) {
+                                         LooperExecutor executor, PeerConnectionFactory factory) {
 
         this.peerConnectionParameters = peerConnectionParameters;
         this.executor = executor;
         this.factory = factory;
         videoCallEnabled = peerConnectionParameters.videoCallEnabled;
 
-        // Check if H.264 is used by default.
-        preferH264 = videoCallEnabled && peerConnectionParameters.videoCodec != null && peerConnectionParameters.videoCodec.equals(NBMMediaConfiguration.NBMVideoCodec.H264.toString());
-        Log.i(TAG, "preferH264: " + preferH264);
+        preferH264 = false;
+        preferIsac = false;
 
-        // Check if ISAC is used by default.
-        preferIsac = peerConnectionParameters.audioCodec != null && peerConnectionParameters.audioCodec.equals(NBMMediaConfiguration.NBMAudioCodec.ISAC.toString());
         connections = new HashMap<>();
-    }
-
-    NBMPeerConnection createPeerConnection( SignalingParameters signalingParameters,
-                                            MediaConstraints pcConstraints,
-                                            String connectionId) {
-        return createPeerConnection(signalingParameters, pcConstraints, connectionId, false);
     }
 
     NBMPeerConnection createPeerConnection( SignalingParameters signalingParameters,
@@ -75,27 +65,29 @@ final class PeerConnectionResourceManager {
                                             String connectionId,
                                             boolean isScreenshareOffer) {
 
-        Log.d(TAG, "Create peer connection.");
-        Log.d(TAG, "PCConstraints: " + pcConstraints.toString());
+        Log.d(TAG, "creating peer connection for " + connectionId);
 
-        // TCP candidates are only useful when connecting to a server that supports ICE-TCP.
+        // TCP candidates are only useful when connecting to a server that supports ICE-TCP
         PeerConnection.RTCConfiguration rtcConfig = new PeerConnection.RTCConfiguration(signalingParameters.iceServers);
         rtcConfig.tcpCandidatePolicy = PeerConnection.TcpCandidatePolicy.DISABLED;
         rtcConfig.bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE;
         rtcConfig.rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE;
         rtcConfig.keyType = PeerConnection.KeyType.ECDSA;
-        //rtcConfig.iceServers IceServer
+
+        // PeerConnectionFactory.createPeerConnection() w/ MediaConstraints deprecated
+        // can set "constraints" in RTCConfiguration object
+        rtcConfig.enableDtlsSrtp = !peerConnectionParameters.loopback;
+
         NBMPeerConnection connectionWrapper = new NBMPeerConnection(connectionId, preferIsac, videoCallEnabled, preferH264, executor, peerConnectionParameters, isScreenshareOffer);
-        PeerConnection peerConnection = factory.createPeerConnection(rtcConfig, pcConstraints, connectionWrapper);
+        PeerConnection peerConnection = factory.createPeerConnection(rtcConfig, connectionWrapper);
 
         connectionWrapper.setPc(peerConnection);
         connections.put(connectionId, connectionWrapper);
 
-        // Set default WebRTC tracing and INFO libjingle logging.
+        // Set INFO libjingle logging.
         // NOTE: this _must_ happen while |factory| is alive!
-        Logging.enableTracing("logcat:", EnumSet.of(Logging.TraceLevel.TRACE_DEFAULT), Logging.Severity.LS_INFO);
+        Logging.enableLogToDebugOutput(Logging.Severity.LS_INFO);
 
-        Log.d(TAG, "Peer connection created.");
         return connectionWrapper;
     }
 
@@ -107,16 +99,17 @@ final class PeerConnectionResourceManager {
         return connections.values();
     }
 
-    void closeConnection(String connectionId){
+    void closeConnection(String connectionId) {
         NBMPeerConnection connection = connections.remove(connectionId);
-        connection.close();
+        if (connection != null) {
+            connection.close();
+        }
     }
 
-    void closeAllConnections(){
-        for(NBMPeerConnection connection : connections.values()){
+    void closeAllConnections() {
+        for (NBMPeerConnection connection : connections.values()) {
             connection.close();
         }
         connections.clear();
     }
-
 }

@@ -24,6 +24,7 @@ import org.webrtc.IceCandidate;
 import org.webrtc.MediaConstraints;
 import org.webrtc.MediaStream;
 import org.webrtc.PeerConnection;
+import org.webrtc.RtpReceiver;
 import org.webrtc.SdpObserver;
 import org.webrtc.SessionDescription;
 
@@ -36,12 +37,11 @@ import java.util.regex.Pattern;
 import fi.vtt.nubomedia.utilitiesandroid.LooperExecutor;
 
 /**
- * A peer connection wrapper which is used by NBMWebRTCPeer to support multiple connectivity.
- *
+ * Wrapper for PeerConnection
  */
 public class NBMPeerConnection implements PeerConnection.Observer, SdpObserver {
 
-    private static final String TAG = "NBMPeerConnection";
+    private static final String TAG = "[VC][Kurento][PC]";
     private static final String VIDEO_CODEC_PARAM_START_BITRATE = "x-google-start-bitrate";
     private static final String AUDIO_CODEC_PARAM_BITRATE = "maxaveragebitrate";
 
@@ -60,9 +60,7 @@ public class NBMPeerConnection implements PeerConnection.Observer, SdpObserver {
     Vector<NBMWebRTCPeer.Observer> observers;
     NBMWebRTCPeer.NBMPeerConnectionParameters peerConnectionParameters;
 
-    /* This private class exists to receive per-channel events and forward them to upper layers
-       with the channel instance
-      */
+    // UNUSED
     private class ObservedDataChannel implements DataChannel.Observer {
         private DataChannel channel;
 
@@ -84,14 +82,14 @@ public class NBMPeerConnection implements PeerConnection.Observer, SdpObserver {
         @Override
         public void onBufferedAmountChange(long l) {
             Log.i(TAG, "[ObservedDataChannel] NBMPeerConnection onBufferedAmountChange");
-            for (NBMWebRTCPeer.Observer observer : observers) {
+            for (NBMWebRTCPeer.Observer observer: observers) {
                 observer.onBufferedAmountChange(l, NBMPeerConnection.this, channel);
             }
         }
 
         @Override
         public void onStateChange(){
-            for (NBMWebRTCPeer.Observer observer : observers) {
+            for (NBMWebRTCPeer.Observer observer: observers) {
                 observer.onStateChange(NBMPeerConnection.this, channel);
             }
         }
@@ -99,7 +97,7 @@ public class NBMPeerConnection implements PeerConnection.Observer, SdpObserver {
         @Override
         public void onMessage(DataChannel.Buffer buffer) {
             Log.i(TAG, "[ObservedDataChannel] NBMPeerConnection onMessage");
-            for (NBMWebRTCPeer.Observer observer : observers) {
+            for (NBMWebRTCPeer.Observer observer: observers) {
                 observer.onMessage(buffer, NBMPeerConnection.this, channel);
             }
         }
@@ -126,15 +124,13 @@ public class NBMPeerConnection implements PeerConnection.Observer, SdpObserver {
         this.isScreenshareConnection = isScreenshareConnection;
     }
 
-    public DataChannel createDataChannel(String label, DataChannel.Init init)
-    {
+    public DataChannel createDataChannel(String label, DataChannel.Init init) {
         ObservedDataChannel dataChannel = new ObservedDataChannel(label, init);
         observedDataChannels.put(label, dataChannel);
         return dataChannel.getChannel();
     }
 
-    @SuppressWarnings("unused")
-    public HashMap<String, DataChannel> getDataChannels(){
+    public HashMap<String, DataChannel> getDataChannels() {
         HashMap<String, DataChannel> channels = new HashMap<>();
         for (HashMap.Entry<String, ObservedDataChannel> entry : observedDataChannels.entrySet()) {
             String key = entry.getKey();
@@ -144,7 +140,6 @@ public class NBMPeerConnection implements PeerConnection.Observer, SdpObserver {
         return channels;
     }
 
-    @SuppressWarnings("unused")
     public String getConnectionId() {
         return connectionId;
     }
@@ -153,8 +148,7 @@ public class NBMPeerConnection implements PeerConnection.Observer, SdpObserver {
         ObservedDataChannel channel = this.observedDataChannels.get(dataChannelId);
         if (channel == null) {
             return null;
-        }
-        else {
+        } else {
             return channel.getChannel();
         }
     }
@@ -163,30 +157,30 @@ public class NBMPeerConnection implements PeerConnection.Observer, SdpObserver {
         this.pc = pc;
     }
 
-    public PeerConnection getPc(){
+    public PeerConnection getPc() {
         return pc;
     }
 
-    public void addObserver(NBMWebRTCPeer.Observer observer){
+    public void addObserver(NBMWebRTCPeer.Observer observer) {
         observers.add(observer);
     }
 
     @Override
     public void onDataChannel(DataChannel dataChannel) {
         Log.i(TAG, "[datachannel] Peer opened data channel");
-        for (NBMWebRTCPeer.Observer observer : observers) {
+        for (NBMWebRTCPeer.Observer observer: observers) {
             observer.onDataChannel(dataChannel, NBMPeerConnection.this);
         }
     }
 
     @Override
     public void onSignalingChange(PeerConnection.SignalingState signalingState) {
-        Log.d(TAG, "SignalingState: " + signalingState);
+        Log.d(TAG, "signaling state change : " + signalingState + " for " + connectionId);
     }
 
     @Override
     public void onIceConnectionChange(PeerConnection.IceConnectionState newState) {
-        Log.d(TAG, "IceConnectionState: " + newState);
+        Log.d(TAG, "ice connection state change: " + newState + " for " + connectionId);
 
         for (NBMWebRTCPeer.Observer o : observers) {
             o.onIceStatusChanged(newState, this);
@@ -205,132 +199,126 @@ public class NBMPeerConnection implements PeerConnection.Observer, SdpObserver {
 
     @Override
     public void onIceCandidate(final IceCandidate iceCandidate) {
-        executor.execute(new Runnable() {
-            @Override
-            public void run() {
-                for (NBMWebRTCPeer.Observer observer : observers) {
-                    observer.onIceCandidate(iceCandidate, NBMPeerConnection.this);
-                }
+        executor.execute(() -> {
+            for (NBMWebRTCPeer.Observer observer : observers) {
+                observer.onIceCandidate(iceCandidate, NBMPeerConnection.this);
             }
         });
     }
 
     @Override
+    public void onIceCandidatesRemoved(IceCandidate[] iceCandidates) {
+        // new from upgraded webrtc dependency, currently unused
+        Log.i(TAG, "onIceCandidatesRemoved() - currently unused");
+    }
+
+    @Override
     public void onAddStream(final MediaStream mediaStream) {
-        executor.execute(new Runnable() {
-            @Override
-            public void run() {
-                if (pc == null) {
-                    return;
-                }
-                if (mediaStream.audioTracks.size() > 1 || mediaStream.videoTracks.size() > 1) {
-                    for (NBMWebRTCPeer.Observer observer : observers) {
-                        observer.onPeerConnectionError("Weird-looking stream: " + mediaStream);
-                    }
-                    return;
-                }
+        executor.execute(() -> {
+            if (pc == null) {
+                return;
+            }
+            if (mediaStream.audioTracks.size() > 1 || mediaStream.videoTracks.size() > 1) {
                 for (NBMWebRTCPeer.Observer observer : observers) {
-                    observer.onRemoteStreamAdded(mediaStream, NBMPeerConnection.this);
+                    observer.onPeerConnectionError("Weird-looking stream: " + mediaStream);
                 }
+                return;
+            }
+            for (NBMWebRTCPeer.Observer observer : observers) {
+                observer.onRemoteStreamAdded(mediaStream, NBMPeerConnection.this);
             }
         });
     }
 
     @Override
     public void onRemoveStream(final MediaStream mediaStream) {
-        executor.execute(new Runnable() {
-            @Override
-            public void run() {
-                if (pc == null) {
-                    return;
-                }
-                if (mediaStream.audioTracks.size() > 1 || mediaStream.videoTracks.size() > 1) {
-                    for (NBMWebRTCPeer.Observer observer : observers) {
-                        observer.onPeerConnectionError("Weird-looking stream: " + mediaStream);
-                    }
-                    return;
-                }
+        executor.execute(() -> {
+            if (pc == null) {
+                return;
+            }
+            if (mediaStream.audioTracks.size() > 1 || mediaStream.videoTracks.size() > 1) {
                 for (NBMWebRTCPeer.Observer observer : observers) {
-                    observer.onRemoteStreamRemoved(mediaStream, NBMPeerConnection.this);
+                    observer.onPeerConnectionError("Weird-looking stream: " + mediaStream);
                 }
+                return;
+            }
+            for (NBMWebRTCPeer.Observer observer: observers) {
+                observer.onRemoteStreamRemoved(mediaStream, NBMPeerConnection.this);
             }
         });
     }
 
     @Override
     public void onRenegotiationNeeded() {
-        Log.d(TAG, "[datachannel] OnRenegotiationNeeded called.");
-        /*if (sdpMediaConstraints != null) {
-            Log.d(TAG, sdpMediaConstraints.toString());
-            pc.createOffer(NBMPeerConnection.this, sdpMediaConstraints);
-        }*/
+        // can use to create another offer
+        Log.d(TAG, "onRenegotiationNeeded() - currently unused");
+    }
+
+    @Override
+    public void onAddTrack(RtpReceiver rtpReceiver, MediaStream[] mediaStreams) {
+        // new from upgraded webrtc dependency, currently unused
+        Log.i(TAG, "onAddTrack() - currently unused");
     }
 
     @Override
     public void onCreateSuccess(SessionDescription sessionDescription) {
-        assert(localSdp != null);
+        if (localSdp != null) {
+            Log.e(TAG, "multiple sdp creates");
+            return;
+        }
+
         String sdpDescription = sessionDescription.description;
-        if (preferIsac) {
-            sdpDescription = preferCodec(sdpDescription, NBMMediaConfiguration.NBMAudioCodec.ISAC.toString(), true);
-        }
-        if (!isScreenshareConnection) {
-            if (videoCallEnabled && preferH264) {
-                Log.i(TAG, "onCreateSuccess - preferH264: true");
-                sdpDescription = preferCodec(sdpDescription, NBMMediaConfiguration.NBMVideoCodec.H264.toString(), false);
-            }
-        }
+
+        // not a big fan of manually modifying the sdp
         final SessionDescription sdp = new SessionDescription(sessionDescription.type, sdpDescription);
         localSdp = sdp;
-        executor.execute(new Runnable() {
-            @Override
-            public void run() {
-                if (pc != null) {// && !isError) {
-                    Log.d(TAG, "Set local SDP from " + sdp.type);
-                    pc.setLocalDescription(NBMPeerConnection.this, sdp);
-                }
+
+        executor.execute(() -> {
+            if (pc == null) {
+                Log.e(TAG, "cannot set local desc - peer connection null for " + connectionId);
+                return;
             }
+
+            Log.d(TAG, "setting local SDP for " + connectionId);
+            pc.setLocalDescription(NBMPeerConnection.this, sdp);
         });
     }
 
     @Override
     public void onSetSuccess() {
-        executor.execute(new Runnable() {
-            @Override
-            public void run() {
-                if (pc == null) {// || isError) {
-                    return;
-                }
-                if (isInitiator) {
-                    // For offering peer connection we first create offer and set
-                    // local SDP, then after receiving answer set remote SDP.
-                    if (pc.getRemoteDescription() == null) {
-                        // We've just set our local SDP so time to send it.
-                        Log.d(TAG, "Local SDP set succesfully");
-                        for (NBMWebRTCPeer.Observer observer : observers) {
-                            observer.onLocalSdpOfferGenerated(localSdp, NBMPeerConnection.this);
-                        }
-                    } else {
-                        // We've just set remote description, so drain remote
-                        // and send local ICE candidates.
-                        Log.d(TAG, "Remote SDP set succesfully");
-                        drainCandidates();
+        executor.execute(() -> {
+
+            if (pc == null) {
+                Log.e(TAG, "onSetSuccess() - peer connection null for " + connectionId);
+                return;
+            }
+
+            if (isInitiator) {
+                // offer created -> local sdp was just set
+                if (pc.getRemoteDescription() == null) {
+                    // remote desc unset -> delegate to observers, they will eventually get a sdp answer
+                    Log.d(TAG, "local SDP was set successfully - notifying observers");
+                    for (NBMWebRTCPeer.Observer observer: observers) {
+                        observer.onLocalSdpOfferGenerated(localSdp, NBMPeerConnection.this);
                     }
                 } else {
-                    // For answering peer connection we set remote SDP and then
-                    // create answer and set local SDP.
-                    if (pc.getLocalDescription() != null) {
-                        // We've just set our local SDP so time to send it, drain
-                        // remote and send local ICE candidates.
-                        Log.d(TAG, "Local SDP set succesfully");
-                        for (NBMWebRTCPeer.Observer observer : observers) {
-                            observer.onLocalSdpAnswerGenerated(localSdp, NBMPeerConnection.this);
-                        }
-                        drainCandidates();
-                    } else {
-                        // We've just set remote SDP - do nothing for now -
-                        // answer will be created soon.
-                        Log.d(TAG, "Remote SDP set succesfully");
+                    // remote desc was just set -> start adding ice candidates to the peer connection
+                    Log.d(TAG, "remote SDP set successfully - draining ice candidates");
+                    drainCandidates();
+                }
+            } else {
+
+                // UNUSED - if we are not the initiator, we created the sdp answer
+                // which currently doesnt happen
+
+                if (pc.getLocalDescription() != null) {
+                    Log.d(TAG, "local SDP set successfully");
+                    for (NBMWebRTCPeer.Observer observer: observers) {
+                        observer.onLocalSdpAnswerGenerated(localSdp, NBMPeerConnection.this);
                     }
+                    drainCandidates();
+                } else {
+                    Log.d(TAG, "remote SDP set successfully");
                 }
             }
         });
@@ -338,14 +326,14 @@ public class NBMPeerConnection implements PeerConnection.Observer, SdpObserver {
 
     @Override
     public void onCreateFailure(String s) {
-        for (NBMWebRTCPeer.Observer observer : observers) {
+        for (NBMWebRTCPeer.Observer observer: observers) {
             observer.onPeerConnectionError(s);
         }
     }
 
     @Override
     public void onSetFailure(String s) {
-        for (NBMWebRTCPeer.Observer observer : observers) {
+        for (NBMWebRTCPeer.Observer observer: observers) {
             observer.onPeerConnectionError(s);
         }
     }
@@ -362,94 +350,52 @@ public class NBMPeerConnection implements PeerConnection.Observer, SdpObserver {
 
     public void createOffer(MediaConstraints sdpMediaConstraints) {
         this.sdpMediaConstraints = sdpMediaConstraints;
-        if (pc != null){// && !isError) {
-            Log.d(TAG, "PC Create OFFER");
+        if (pc != null) {
+            Log.d(TAG, "creating sdp offer");
             isInitiator = true;
-            pc.createOffer(this,this.sdpMediaConstraints);
+            pc.createOffer(this, this.sdpMediaConstraints);
         }
-    }
-
-    public void createAnswer(final MediaConstraints sdpMediaConstraints) {
-        executor.execute(new Runnable() {
-            @Override
-            public void run() {
-                if (pc != null){// && !isError) {
-                    Log.d(TAG, "PC create ANSWER");
-                    isInitiator = false;
-                    pc.createAnswer(NBMPeerConnection.this, sdpMediaConstraints);
-                }
-            }
-        });
     }
 
     protected void setRemoteDescriptionSync(SessionDescription sdp) {
         if (pc == null) {
+            Log.e(TAG, "cannot set remote desc - peer connection null for " + connectionId);
             return;
         }
+
+        // not a big fan of manually modifying the sdp
         String sdpDescription = sdp.description;
-        if (preferIsac) {
-            sdpDescription = preferCodec(sdpDescription, NBMMediaConfiguration.NBMAudioCodec.ISAC.toString(), true);
-        }
-        if (!isScreenshareConnection) {
-            if (videoCallEnabled && preferH264) {
-                Log.i(TAG, "setRemoteDescriptionSync - preferH264: true");
-                sdpDescription = preferCodec(sdpDescription, NBMMediaConfiguration.NBMVideoCodec.H264.toString(), false);
-            }
-        }
-        if (videoCallEnabled && peerConnectionParameters.videoStartBitrate > 0) {
-            sdpDescription = setStartBitrate(NBMMediaConfiguration.NBMVideoCodec.VP8.toString(), true, sdpDescription, peerConnectionParameters.videoStartBitrate);
-            sdpDescription = setStartBitrate(NBMMediaConfiguration.NBMVideoCodec.VP9.toString(), true, sdpDescription, peerConnectionParameters.videoStartBitrate);
-            sdpDescription = setStartBitrate(NBMMediaConfiguration.NBMVideoCodec.H264.toString(), true, sdpDescription, peerConnectionParameters.videoStartBitrate);
-        }
-        if (peerConnectionParameters.audioStartBitrate > 0) {
-            sdpDescription = setStartBitrate(NBMMediaConfiguration.NBMAudioCodec.OPUS.toString(), false, sdpDescription, peerConnectionParameters.audioStartBitrate);
-        }
-        Log.d(TAG, "Set remote SDP.");
+
+        Log.d(TAG, "setting remote sdp");
         SessionDescription sdpRemote = new SessionDescription(sdp.type, sdpDescription);
         pc.setRemoteDescription(NBMPeerConnection.this, sdpRemote);
     }
 
     protected void setRemoteDescription(final SessionDescription sdp) {
-        executor.execute(new Runnable() {
-            @Override
-            public void run() {
-                setRemoteDescriptionSync(sdp);
-            }
-        });
+        executor.execute(() -> setRemoteDescriptionSync(sdp));
     }
 
     public void addRemoteIceCandidate(final IceCandidate candidate) {
-        executor.execute(new Runnable() {
-            @Override
-            public void run() {
-                if (pc != null){// && !isError) {
-                    if (queuedRemoteCandidates != null) {
-                        queuedRemoteCandidates.add(candidate);
-                    } else {
-                        pc.addIceCandidate(candidate);
-                    }
+        executor.execute(() -> {
+            if (pc != null) {
+                if (queuedRemoteCandidates != null) {
+                    queuedRemoteCandidates.add(candidate);
+                } else {
+                    pc.addIceCandidate(candidate);
                 }
             }
         });
     }
 
-    public void close(){
-        Log.d(TAG, "Closing peer connection.");
+    public void close() {
+        Log.d(TAG, "closing peer connection for " + connectionId);
         if (pc != null) {
             pc.dispose();
             pc = null;
         }
-        Log.d(TAG, "Closing peer connection done.");
     }
 
-    /**
-     *
-     * @param codec
-     * @param isVideoCodec
-     * @param sdpDescription
-     * @param bitrateKbps
-     * @return
-     */
+    // currently unused since we do not set a custom bitrate
     private static String setStartBitrate(String codec, boolean isVideoCodec, String sdpDescription, int bitrateKbps) {
         String[] lines = sdpDescription.split("\r\n");
         int rtpmapLineIndex = -1;
@@ -508,14 +454,7 @@ public class NBMPeerConnection implements PeerConnection.Observer, SdpObserver {
         return newSdpDescription.toString();
     }
 
-
-    /**
-     *
-     * @param sdpDescription
-     * @param codec
-     * @param isAudio
-     * @return
-     */
+    // currently unused since we use the default video / audio codecs
     private static String preferCodec(String sdpDescription, String codec, boolean isAudio) {
         String[] lines = sdpDescription.split("\r\n");
         int mLineIndex = -1;
